@@ -98,8 +98,47 @@
         <!-- 학습 데이터 파일 목록이 여기에 표시됩니다 -->
       </div>
     </div>
-  </div>
+    
+    <!-- === popup.html 내 학습 데이터 카드 아래에 추가 (필요시 위치 조정) === -->
+    <div class="card">
+      <div class="title">룰 관리 (키워드별 최소 심각도)</div>
+      <div class="row">
+        <div class="label">키워드</div>
+        <input id="ruleTerm" class="select" placeholder="예: 시발">
+      </div>
+      <div class="row">
+        <div class="label">최소 심각도</div>
+        <select id="ruleMin" class="select">
+          <option value="0">0 — 상향 없음</option>
+          <option value="1">1 — 약간 악성 이상</option>
+          <option value="2">2 — 악성</option>
+       </select>
+      </div>
+      <div class="row">
+        <div class="label">추가</div>
+        <button id="addRule" class="btn">룰 추가</button>
+      </div>
+      <div class="sep"></div>
+      <div class="help">아래 목록에서 삭제 아이콘으로 제거할 수 있습니다.</div>
+      <div id="ruleList" class="stats"></div>
+    </div>
 
+    <div class="card">
+      <div class="title">마스크 관리 (모델 입력에서 제외)</div>
+      <div class="row">
+        <div class="label">키워드</div>
+        <input id="maskTerm" class="select" placeholder="예: 시발">
+      </div>
+      <div class="row">
+        <div class="label">추가</div>
+        <button id="addMask" class="btn">마스크 추가</button>
+      </div>
+      <div class="sep"></div>
+      <div class="help">모델로 보내기 전에 해당 키워드를 제거합니다.</div>
+      <div id="maskList" class="stats"></div>
+    </div>
+  </div>
+  
   <script src="popup.js"></script>
 </body>
 </html>

@@ -1,6 +1,6 @@
-const DEF = { enabled: true, minSeverityToHide: 2, action: 'hide', showBadge: true, trainingMode: false, serverUrl: 'http://127.0.0.1:8000' };
-function getValues() { return new Promise(r => chrome.storage.local.get(DEF, r)); }
-function setValues(v) { return new Promise(r => chrome.storage.local.set(v, r)); }
+const DEF = { enabled: true, minSeverityToHide: 2, action: 'hide', showBadge: true, trainingMode: false, serverUrl: 'http://127.0.0.1:8000', rules: [], masks: [] };
+function getValues(){ return new Promise(r => chrome.storage.local.get(DEF, r)); }
+function setValues(v){ return new Promise(r => chrome.storage.local.set(v, r)); }
 
 async function getTrainingStats() {
 	const { serverUrl } = await getValues();
@@ -238,4 +238,101 @@ function startStatusMonitoring() {
 
 document.addEventListener('DOMContentLoaded', initPopup);
 
+async function renderRules() {
+  const v = await getValues();
+  const list = document.getElementById('ruleList');
+  if (!list) return;
+  const rules = Array.isArray(v.rules) ? v.rules : [];
+  if (rules.length === 0) {
+    list.innerHTML = '<div class="help">등록된 룰이 없습니다.</div>';
+    return;
+  }
+  list.innerHTML = rules.map((r, idx) =>
+    `<div class="kv"><span class="dot"></span> <strong>${r.term}</strong> → 최소 ${r.min}
+     <button data-idx="${idx}" class="btn btn-small" style="margin-left:8px;">삭제</button></div>`
+  ).join('');
+  list.querySelectorAll('button[data-idx]').forEach(btn => {
+    btn.onclick = async () => {
+      const i = Number(btn.dataset.idx);
+      const curr = await getValues();
+      const arr = Array.isArray(curr.rules) ? curr.rules.slice() : [];
+      if (i >= 0 && i < arr.length) arr.splice(i, 1);
+      await setValues({ rules: arr });
+      renderRules();
+    };
+  });
+}
 
+async function renderMasks() {
+  const v = await getValues();
+  const list = document.getElementById('maskList');
+  if (!list) return;
+  const masks = Array.isArray(v.masks) ? v.masks : [];
+  if (masks.length === 0) {
+    list.innerHTML = '<div class="help">등록된 마스크가 없습니다.</div>';
+    return;
+  }
+  list.innerHTML = masks.map((m, idx) =>
+    `<div class="kv"><span class="dot"></span> <strong>${m}</strong>
+     <button data-idx="${idx}" class="btn btn-small" style="margin-left:8px;">삭제</button></div>`
+  ).join('');
+  list.querySelectorAll('button[data-idx]').forEach(btn => {
+    btn.onclick = async () => {
+      const i = Number(btn.dataset.idx);
+      const curr = await getValues();
+      const arr = Array.isArray(curr.masks) ? curr.masks.slice() : [];
+      if (i >= 0 && i < arr.length) arr.splice(i, 1);
+      await setValues({ masks: arr });
+      renderMasks();
+    };
+  });
+}
+
+async function installRuleMaskHandlers() {
+  const addRule = document.getElementById('addRule');
+  const ruleTerm = document.getElementById('ruleTerm');
+  const ruleMin = document.getElementById('ruleMin');
+
+  if (addRule && ruleTerm && ruleMin) {
+    addRule.onclick = async (e) => {
+      e.preventDefault(); e.stopPropagation();
+      const term = (ruleTerm.value || '').trim();
+      const min = Number(ruleMin.value || 0);
+      if (!term) return;
+      const curr = await getValues();
+      const rules = Array.isArray(curr.rules) ? curr.rules.slice() : [];
+      // 중복 용어는 최신 설정으로 갱신
+      const idx = rules.findIndex(r => r.term === term);
+      if (idx >= 0) rules[idx] = { term, min }; else rules.push({ term, min });
+      await setValues({ rules });
+      ruleTerm.value = '';
+      renderRules();
+    };
+  }
+
+  const addMask = document.getElementById('addMask');
+  const maskTerm = document.getElementById('maskTerm');
+  if (addMask && maskTerm) {
+    addMask.onclick = async (e) => {
+      e.preventDefault(); e.stopPropagation();
+      const term = (maskTerm.value || '').trim();
+      if (!term) return;
+      const curr = await getValues();
+      const masks = Array.isArray(curr.masks) ? curr.masks.slice() : [];
+      if (!masks.includes(term)) masks.push(term);
+      await setValues({ masks });
+      maskTerm.value = '';
+      renderMasks();
+    };
+  }
+
+  // 최초 렌더
+  await renderRules();
+  await renderMasks();
+}
+
+// 기존 initPopup 끝부분에서 호출(또는 DOMContentLoaded 시점)
+document.addEventListener('DOMContentLoaded', () => {
+  // 기존 initPopup가 이미 바인딩되어 있으면 그 이후에 호출해도 무방
+  try { installRuleMaskHandlers(); } catch {}
+});
