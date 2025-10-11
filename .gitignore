@@ -17,8 +17,9 @@ server/.venv/
 # Node / Web
 extension/node_modules/
 
-# Models & Training artifacts (exclude from repo)
-model/
+# Models & Training artifacts (exclude contents, keep dir)
+model/*
+!model/.gitkeep
 model_backup/
 model_updated/
 training_data/
