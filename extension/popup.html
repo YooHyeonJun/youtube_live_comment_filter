@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <title>라이브 채팅 필터</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link href="popup.css" rel="stylesheet">
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="title">라이브 채팅 필터</div>
+      <div class="badge" id="count">0</div>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <div class="label">확장 활성화</div>
+        <label class="switch">
+          <input type="checkbox" id="enabled">
+          <span class="track"><span class="thumb"></span></span>
+        </label>
+      </div>
+      <div class="row">
+        <div class="label">차단 기준</div>
+        <select id="min" class="select">
+          <option value="0">0 — 모두 표시</option>
+          <option value="1">1 — ‘약간 악성’ 이상</option>
+          <option value="2">2 — ‘악성’만</option>
+        </select>
+      </div>
+      <div class="row">
+        <div class="label">동작</div>
+        <select id="act" class="select">
+          <option value="hide">숨김</option>
+          <option value="blur">블러</option>
+          <option value="delete">삭제(모더 권한)</option>
+        </select>
+      </div>
+      <div class="row">
+        <div class="label">배지</div>
+        <label class="switch">
+          <input type="checkbox" id="badge">
+          <span class="track"><span class="thumb"></span></span>
+        </label>
+      </div>
+      <div class="sep"></div>
+      <div class="kv"><span class="dot"></span> 상태: 실행 중</div>
+      <div class="help">설정은 즉시 저장됩니다. 삭제는 채널 권한이 필요하며
+        실패 시 자동으로 '숨김'으로 처리됩니다.</div>
+    </div>
+
+    <div class="card">
+      <div class="title">학습 데이터 수집</div>
+      <div class="row">
+        <div class="label">수집 모드</div>
+        <label class="switch">
+          <input type="checkbox" id="trainingMode">
+          <span class="track"><span class="thumb"></span></span>
+        </label>
+      </div>
+      <div class="help">활성화하면 댓글을 클릭하여 라벨을 지정할 수 있습니다.</div>
+      <div class="sep"></div>
+      <div class="stats" id="trainingStats">
+        <div>수집된 데이터: <span id="dataCount">0</span>개</div>
+        <div>정상: <span id="normalCount">0</span> | 약간 악성: <span id="mildCount">0</span> | 악성: <span id="maliciousCount">0</span></div>
+      </div>
+      <div class="sep"></div>
+      <div class="row">
+        <div class="label">모델 관리</div>
+        <button id="reloadModel" class="btn">모델 재로드</button>
+      </div>
+      <div class="row">
+        <div class="label">재학습</div>
+        <button id="retrainModel" class="btn btn-primary">재학습 시작</button>
+      </div>
+      <div class="help">새로 학습된 모델을 적용하려면 모델 재로드를 클릭하세요.</div>
+      <div class="help">충분한 데이터가 수집되면 재학습을 시작할 수 있습니다.</div>
+      <div class="sep"></div>
+      <div class="training-progress" id="trainingProgress" style="display: none;">
+        <div class="progress-bar">
+          <div class="progress-fill" id="progressFill"></div>
+        </div>
+        <div class="progress-text" id="progressText">학습 준비 중...</div>
+      </div>
+    </div>
+
+    <!-- 학습 데이터 관리 섹션 -->
+    <div class="card">
+      <div class="title">학습 데이터 관리</div>
+      <div class="data-management">
+        <button class="btn btn-secondary" id="refreshData">새로고침</button>
+        <button class="btn btn-danger" id="deleteAllData">전체 삭제</button>
+      </div>
+      <div class="help">학습 데이터 파일을 관리하고 삭제할 수 있습니다.</div>
+      <div class="sep"></div>
+      <div class="data-files" id="dataFiles">
+        <!-- 학습 데이터 파일 목록이 여기에 표시됩니다 -->
+      </div>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

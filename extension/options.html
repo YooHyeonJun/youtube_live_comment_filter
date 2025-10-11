@@ -1,0 +1,80 @@
+<!doctype html>
+<html>
+<head>
+	<meta charset="utf-8"/>
+	<meta name="viewport" content="width=device-width, initial-scale=1"/>
+	<title>YouTube Live Chat Filter 설정</title>
+	<style>
+		body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 16px; }
+		label { display:block; margin: 8px 0 4px; }
+		input, select { width: 100%; padding: 8px; box-sizing: border-box; }
+		.small { color:#666; font-size:12px; }
+		.row { display:flex; gap:12px; align-items:center; }
+		.row > * { flex:1; }
+		button { padding:8px 12px; }
+	</style>
+</head>
+<body>
+	<h2>설정</h2>
+	<label>서버 주소</label>
+	<input id="serverUrl" placeholder="http://127.0.0.1:8000"/>
+	<div class="small">server/run.bat 으로 로컬 서버 실행 후 연결하세요.</div>
+
+	<label>차단 기준</label>
+	<select id="minSeverityToHide">
+		<option value="2">2 = 악성만 차단</option>
+		<option value="1">1 = 약간 악성 이상 차단</option>
+		<option value="0">0 = 전부 표시</option>
+	</select>
+
+	<label>차단 동작</label>
+	<select id="action">
+		<option value="hide">숨김</option>
+		<option value="blur">블러</option>
+		<option value="delete">삭제(가능할 때)</option>
+	</select>
+
+	<label><input type="checkbox" id="showBadge"/> 라벨 배지 표시</label>
+
+	<div class="row" style="margin-top:12px;">
+		<button id="save">저장</button>
+		<button id="test">서버 점검</button>
+	</div>
+
+	<pre id="out" class="small"></pre>
+
+	<script>
+		const DEFAULTS = { serverUrl: 'http://127.0.0.1:8000', minSeverityToHide: 2, action: 'hide', showBadge: true };
+		function getValues(){
+			return new Promise(r=> chrome.storage.local.get(DEFAULTS, r));
+		}
+		function setValues(v){
+			return new Promise(r=> chrome.storage.local.set(v, r));
+		}
+		async function init(){
+			const v = await getValues();
+			serverUrl.value = v.serverUrl;
+			minSeverityToHide.value = String(v.minSeverityToHide);
+			action.value = v.action;
+			showBadge.checked = !!v.showBadge;
+		}
+		save.onclick = async () => {
+			await setValues({ serverUrl: serverUrl.value, minSeverityToHide: Number(minSeverityToHide.value), action: action.value, showBadge: showBadge.checked });
+			out.textContent = '저장됨';
+		};
+		test.onclick = async () => {
+			const url = serverUrl.value.replace(/\/$/,'') + '/health';
+			out.textContent = '요청중...';
+			try {
+				const res = await fetch(url);
+				out.textContent = res.ok ? await res.text() : `HTTP ${res.status}`;
+			} catch (e) {
+				out.textContent = String(e);
+			}
+		};
+		init();
+	</script>
+</body>
+</html>
+
+

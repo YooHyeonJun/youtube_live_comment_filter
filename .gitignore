@@ -1,0 +1,35 @@
+# OS / Editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.log
+.env
+.env.*
+server/.venv/
+
+# Node / Web
+extension/node_modules/
+
+# Models & Training artifacts (exclude from repo)
+model/
+model_backup/
+model_updated/
+training_data/
+training_temp/
+*.safetensors
+*.bin
+*.pt
+
+# Archives / large binaries
+*.zip
+*.7z
+*.tar
+*.tar.gz
+

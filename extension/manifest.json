@@ -1,0 +1,30 @@
+{
+	"manifest_version": 3,
+	"name": "YouTube Live Chat Filter",
+	"version": "1.0.0",
+	"description": "로컬 모델 서버로 유튜브 라이브 채팅을 분류하고 차단합니다.",
+	"permissions": ["storage", "scripting", "activeTab"],
+	"host_permissions": [
+		"https://www.youtube.com/*"
+	],
+	"background": {
+		"service_worker": "background.js"
+	},
+	"action": { "default_popup": "popup.html", "default_title": "YouTube Live Chat Filter" },
+	"options_page": "options.html",
+	"content_scripts": [
+		{
+			"matches": ["https://www.youtube.com/*"],
+			"js": ["content.js"],
+			"run_at": "document_idle",
+			"all_frames": true
+		},
+		{
+			"matches": ["https://www.youtube.com/live_chat*"],
+			"js": ["content.js"],
+			"run_at": "document_idle",
+			"all_frames": true
+		}
+	]
+}
+
