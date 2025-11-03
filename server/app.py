@@ -17,6 +17,10 @@ from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
+from peft import PeftModel
+
+# Early logger reference for functions defined before logging setup below
+LOGGER = logging.getLogger("yt_live_chat_filter")
 
 
 class PredictRequest(BaseModel):
@@ -44,10 +48,43 @@ class LookupRequest(BaseModel):
 	texts: List[str]
 
 
+ADAPTER_STATUS = {"attached": False, "path": None}
+
 def _load_model(model_dir: Path):
 	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 	tokenizer = AutoTokenizer.from_pretrained(str(model_dir))
-	model = AutoModelForSequenceClassification.from_pretrained(str(model_dir))
+	
+	# Check for active adapter first
+	adapter_dir = Path(__file__).resolve().parents[1] / "adapters" / "active"
+	adapter_cfg = adapter_dir / "adapter_config.json"
+	has_model_file = (adapter_dir / "model.safetensors").exists() or (adapter_dir / "pytorch_model.bin").exists()
+	
+	try:
+		if adapter_cfg.exists():
+			# PEFT adapter: load base model then attach adapter
+			model = AutoModelForSequenceClassification.from_pretrained(str(model_dir))
+			model = PeftModel.from_pretrained(model, str(adapter_dir))
+			ADAPTER_STATUS["attached"] = True
+			ADAPTER_STATUS["path"] = str(adapter_dir)
+			LOGGER.info(f"PEFT adapter attached: {ADAPTER_STATUS['path']}")
+		elif has_model_file:
+			# Full fine-tuned model (BitFit/Linear): load directly
+			model = AutoModelForSequenceClassification.from_pretrained(str(adapter_dir))
+			ADAPTER_STATUS["attached"] = True
+			ADAPTER_STATUS["path"] = str(adapter_dir)
+			LOGGER.info(f"Fine-tuned model loaded from: {ADAPTER_STATUS['path']}")
+		else:
+			# No adapter: use base model
+			model = AutoModelForSequenceClassification.from_pretrained(str(model_dir))
+			ADAPTER_STATUS["attached"] = False
+			ADAPTER_STATUS["path"] = None
+			LOGGER.info("No adapter found. Using base model only.")
+	except Exception as e:
+		LOGGER.warning(f"Adapter load failed, using base model: {e}")
+		model = AutoModelForSequenceClassification.from_pretrained(str(model_dir))
+		ADAPTER_STATUS["attached"] = False
+		ADAPTER_STATUS["path"] = None
+	
 	model.to(device)
 	model.eval()
 	return tokenizer, model, device
@@ -116,9 +153,9 @@ def run_training_background():
 		TRAINING_STATUS["progress"] = 20
 		TRAINING_STATUS["message"] = f"학습 데이터 {total_samples}개 확인됨. 학습 시작..."
 		
-		# 학습 스크립트 실행
+		# 학습 스크립트 실행 (BitFit)
 		script_path = Path(__file__).parent / "train.py"
-		output_dir = MODEL_DIR.parent / "model_updated"
+		output_dir = ADAPTER_UPDATED_DIR
 		
 		cmd = [
 			str(Path(__file__).parent / ".venv" / "Scripts" / "python.exe"),
@@ -126,34 +163,34 @@ def run_training_background():
 			"--model-dir", str(MODEL_DIR),
 			"--training-data-dir", str(TRAINING_DATA_DIR),
 			"--output-dir", str(output_dir),
-			"--epochs", "3",
-			"--batch-size", "8"
+			"--epochs", os.environ.get("TRAINING_EPOCHS", "1"),
+			"--batch-size", os.environ.get("TRAINING_BATCH", "16"),
+			"--lr", os.environ.get("TRAINING_LR", "5e-6"),
+			"--warmup-ratio", os.environ.get("TRAINING_WARMUP_RATIO", "0.06")
 		]
 		
 		TRAINING_STATUS["progress"] = 30
 		TRAINING_STATUS["message"] = "모델 학습 중... (시간이 걸릴 수 있습니다)"
 		
-		# 학습 실행
-		result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)  # 30분 타임아웃
+		# 학습 실행 (타임아웃 없음)
+		result = subprocess.run(cmd, capture_output=True, text=True, timeout=None)
 		
 		if result.returncode == 0:
 			TRAINING_STATUS["progress"] = 80
 			TRAINING_STATUS["message"] = "학습 완료. 모델 교체 중..."
 			
-			# 기존 모델 백업
-			backup_dir = MODEL_DIR.parent / "model_backup"
-			if backup_dir.exists():
-				import shutil
-				shutil.rmtree(backup_dir)
-			
-			import shutil
-			shutil.move(str(MODEL_DIR), str(backup_dir))
-			shutil.move(str(output_dir), str(MODEL_DIR))
+			# 어댑터 스왑: active -> backup, updated -> active
+			if ADAPTER_BACKUP_DIR.exists():
+				shutil.rmtree(ADAPTER_BACKUP_DIR)
+			if ADAPTER_ACTIVE_DIR.exists():
+				shutil.move(str(ADAPTER_ACTIVE_DIR), str(ADAPTER_BACKUP_DIR))
+			if ADAPTER_UPDATED_DIR.exists():
+				shutil.move(str(ADAPTER_UPDATED_DIR), str(ADAPTER_ACTIVE_DIR))
 			
 			TRAINING_STATUS["progress"] = 90
 			TRAINING_STATUS["message"] = "모델 재로드 중..."
 			
-			# 모델 재로드
+			# 모델 재로드(어댑터 포함)
 			TOKENIZER, MODEL, DEVICE = _load_model(MODEL_DIR)
 			
 			TRAINING_STATUS["progress"] = 100
@@ -185,6 +222,13 @@ TRAINING_DATA_DIR.mkdir(exist_ok=True)
 # 임시 학습 데이터 디렉터리 (프로젝트 폴더 내부)
 TEMP_TRAINING_DATA_DIR = Path(__file__).resolve().parents[1] / "training_temp"
 TEMP_TRAINING_DATA_DIR.mkdir(exist_ok=True)
+
+# PEFT 어댑터 디렉터리들
+ADAPTERS_DIR = Path(__file__).resolve().parents[1] / "adapters"
+ADAPTERS_DIR.mkdir(exist_ok=True)
+ADAPTER_ACTIVE_DIR = ADAPTERS_DIR / "active"
+ADAPTER_UPDATED_DIR = ADAPTERS_DIR / "updated"
+ADAPTER_BACKUP_DIR = ADAPTERS_DIR / "backup"
 
 def _cleanup_temp_dir():
 	try:
@@ -456,6 +500,30 @@ def start_retraining(background_tasks: BackgroundTasks) -> Dict[str, Any]:
 def get_training_status() -> Dict[str, Any]:
 	"""재학습 상태 조회"""
 	return TRAINING_STATUS
+
+
+@app.post("/model/reset-training-status")
+def reset_training_status() -> Dict[str, Any]:
+	"""재학습 상태 강제 리셋 (막힌 상태 해결용)"""
+	global TRAINING_STATUS
+	TRAINING_STATUS = {
+		"is_training": False,
+		"progress": 0,
+		"message": "",
+		"error": None
+	}
+	return {"success": True, "message": "학습 상태가 리셋되었습니다"}
+
+
+@app.get("/model/info")
+def model_info() -> Dict[str, Any]:
+    """현재 모델/어댑터 상태 확인"""
+    return {
+        "device": str(DEVICE),
+        "num_labels": MODEL.config.num_labels,
+        "adapter_attached": bool(ADAPTER_STATUS.get("attached", False)),
+        "adapter_path": ADAPTER_STATUS.get("path")
+    }
 
 
 @app.get("/training-data/files")

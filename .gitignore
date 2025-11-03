@@ -33,4 +33,4 @@ training_temp/
 *.7z
 *.tar
 *.tar.gz
-
+adapters/

@@ -67,7 +67,7 @@ async function classify(texts) {
   }
 }
 
-async function sendTrainingData(text, label, userId = 'anonymous', useTemp = true) {
+async function sendTrainingData(text, label, userId = 'anonymous', useTemp = false) {
   const { serverUrl } = await getSettings();
   const url = `${serverUrl.replace(/\/$/, '')}/training-data${useTemp ? '?temp=1' : ''}`;
   try {
@@ -161,7 +161,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message?.type === 'sendTrainingData') {
-    sendTrainingData(message.text, message.label, message.userId).then(sendResponse);
+    const useTemp = message.useTemp === true; // 명시 요청 시에만 temp 사용
+    sendTrainingData(message.text, message.label, message.userId, useTemp).then(sendResponse);
     return true;
   }
 
