@@ -19,6 +19,34 @@ from pydantic import BaseModel
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
 
+def get_base_path():
+	"""실행 환경에 따른 기본 경로 반환 (exe vs 일반 실행)"""
+	if getattr(sys, 'frozen', False):
+		# PyInstaller로 패키징된 exe 실행 중
+		return Path(sys.executable).parent
+	else:
+		# 일반 Python 스크립트 실행
+		return Path(__file__).resolve().parents[1]
+
+
+def get_model_path():
+	"""모델 경로 반환"""
+	if getattr(sys, 'frozen', False):
+		# exe 실행 시: exe와 함께 번들된 초기 모델
+		return Path(sys._MEIPASS) / "model"
+	else:
+		# 일반 실행 시
+		return Path(__file__).resolve().parents[1] / "model"
+
+
+def get_user_data_path():
+	"""사용자 데이터 경로 반환 (학습 데이터, 업데이트된 모델 등)"""
+	base = get_base_path()
+	user_data_dir = base / "user_data"
+	user_data_dir.mkdir(exist_ok=True)
+	return user_data_dir
+
+
 class PredictRequest(BaseModel):
 	texts: List[str]
 
@@ -108,53 +136,63 @@ def run_training_background():
 					if line.strip():
 						total_samples += 1
 		
-		if total_samples < 5:
-			TRAINING_STATUS["error"] = f"학습 데이터가 부족합니다. 최소 5개 필요, 현재 {total_samples}개"
+		if total_samples < 1:
+			TRAINING_STATUS["error"] = f"학습 데이터가 부족합니다. 최소 1개 필요, 현재 {total_samples}개"
 			TRAINING_STATUS["is_training"] = False
 			return
 		
 		TRAINING_STATUS["progress"] = 20
 		TRAINING_STATUS["message"] = f"학습 데이터 {total_samples}개 확인됨. 학습 시작..."
 		
-		# 학습 스크립트 실행
-		script_path = Path(__file__).parent / "train.py"
-		output_dir = MODEL_DIR.parent / "model_updated"
-		
-		cmd = [
-			str(Path(__file__).parent / ".venv" / "Scripts" / "python.exe"),
-			str(script_path),
-			"--model-dir", str(MODEL_DIR),
-			"--training-data-dir", str(TRAINING_DATA_DIR),
-			"--output-dir", str(output_dir),
-			"--epochs", "3",
-			"--batch-size", "8"
-		]
+		# 학습 실행 (subprocess 대신 직접 호출)
+		output_dir = USER_DATA_PATH / "model_new"
 		
 		TRAINING_STATUS["progress"] = 30
 		TRAINING_STATUS["message"] = "모델 학습 중... (시간이 걸릴 수 있습니다)"
 		
-		# 학습 실행
-		result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)  # 30분 타임아웃
+		# train.py의 train_model 함수를 직접 호출
+		result_returncode = 1
+		result_stderr = ""
 		
-		if result.returncode == 0:
+		try:
+			from train import train_model
+			success = train_model(
+				model_dir=DEFAULT_MODEL_DIR,  # 항상 기본 모델에서 시작
+				training_data_dir=TRAINING_DATA_DIR,
+				output_dir=output_dir,
+				num_epochs=3,
+				batch_size=8,
+				augment_factor=3000  # 데이터 3000배 증강
+			)
+			result_returncode = 0 if success else 1
+			if not success:
+				result_stderr = "학습 실패"
+		except Exception as e:
+			LOGGER.error(f"Training module error: {e}")
+			result_returncode = 1
+			result_stderr = str(e)
+		
+		if result_returncode == 0:
 			TRAINING_STATUS["progress"] = 80
 			TRAINING_STATUS["message"] = "학습 완료. 모델 교체 중..."
 			
-			# 기존 모델 백업
-			backup_dir = MODEL_DIR.parent / "model_backup"
+			# 기존 업데이트된 모델 백업
+			backup_dir = USER_DATA_PATH / "model_backup"
 			if backup_dir.exists():
-				import shutil
 				shutil.rmtree(backup_dir)
 			
-			import shutil
-			shutil.move(str(MODEL_DIR), str(backup_dir))
-			shutil.move(str(output_dir), str(MODEL_DIR))
+			# 이전 업데이트 모델이 있다면 백업
+			if UPDATED_MODEL_DIR.exists() and any(UPDATED_MODEL_DIR.iterdir()):
+				shutil.move(str(UPDATED_MODEL_DIR), str(backup_dir))
+			
+			# 새 모델을 업데이트 위치로 이동
+			shutil.move(str(output_dir), str(UPDATED_MODEL_DIR))
 			
 			TRAINING_STATUS["progress"] = 90
 			TRAINING_STATUS["message"] = "모델 재로드 중..."
 			
 			# 모델 재로드
-			TOKENIZER, MODEL, DEVICE = _load_model(MODEL_DIR)
+			TOKENIZER, MODEL, DEVICE = _load_model(UPDATED_MODEL_DIR)
 			
 			TRAINING_STATUS["progress"] = 100
 			TRAINING_STATUS["message"] = "재학습 완료!"
@@ -163,14 +201,9 @@ def run_training_background():
 			LOGGER.info("Model retraining completed successfully!")
 			
 		else:
-			TRAINING_STATUS["error"] = f"학습 실패: {result.stderr}"
+			TRAINING_STATUS["error"] = f"학습 실패: {result_stderr}"
 			TRAINING_STATUS["is_training"] = False
-			LOGGER.error(f"Training failed: {result.stderr}")
-			
-	except subprocess.TimeoutExpired:
-		TRAINING_STATUS["error"] = "학습 시간 초과 (30분)"
-		TRAINING_STATUS["is_training"] = False
-		LOGGER.error("Training timeout")
+			LOGGER.error(f"Training failed: {result_stderr}")
 		
 	except Exception as e:
 		TRAINING_STATUS["error"] = f"학습 중 오류: {str(e)}"
@@ -178,12 +211,19 @@ def run_training_background():
 		LOGGER.error(f"Training error: {e}")
 
 
-MODEL_DIR = Path(__file__).resolve().parents[1] / "model"
-TRAINING_DATA_DIR = Path(__file__).resolve().parents[1] / "training_data"
+# 경로 설정
+USER_DATA_PATH = get_user_data_path()
+
+# 업데이트된 모델이 있으면 사용, 없으면 기본 모델 사용
+UPDATED_MODEL_DIR = USER_DATA_PATH / "model"
+DEFAULT_MODEL_DIR = get_model_path()
+MODEL_DIR = UPDATED_MODEL_DIR if UPDATED_MODEL_DIR.exists() and any(UPDATED_MODEL_DIR.iterdir()) else DEFAULT_MODEL_DIR
+
+TRAINING_DATA_DIR = USER_DATA_PATH / "training_data"
 TRAINING_DATA_DIR.mkdir(exist_ok=True)
 
-# 임시 학습 데이터 디렉터리 (프로젝트 폴더 내부)
-TEMP_TRAINING_DATA_DIR = Path(__file__).resolve().parents[1] / "training_temp"
+# 임시 학습 데이터 디렉터리
+TEMP_TRAINING_DATA_DIR = USER_DATA_PATH / "training_temp"
 TEMP_TRAINING_DATA_DIR.mkdir(exist_ok=True)
 
 def _cleanup_temp_dir():
@@ -375,12 +415,19 @@ def get_training_data_stats() -> Dict[str, Any]:
         total_count = 0
         label_counts = {0: 0, 1: 0, 2: 0}
         for data_file in TRAINING_DATA_DIR.glob("training_data_*.jsonl"):
-            with open(data_file, "r", encoding="utf-8") as f:
-                for line in f:
-                    if line.strip():
-                        data = json.loads(line)
-                        total_count += 1
-                        label_counts[int(data.get("label", 0))] += 1
+            try:
+                with open(data_file, "r", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        if line.strip():
+                            try:
+                                data = json.loads(line)
+                                total_count += 1
+                                label_counts[int(data.get("label", 0))] += 1
+                            except (json.JSONDecodeError, ValueError):
+                                continue
+            except Exception as e:
+                LOGGER.warning(f"Failed to read file {data_file}: {e}")
+                continue
         return {
             "total_samples": total_count,
             "label_distribution": { LABEL_NAMES[k]: v for k, v in label_counts.items() },
@@ -391,6 +438,35 @@ def get_training_data_stats() -> Dict[str, Any]:
         return {"error": str(e)}
 
 
+@app.get("/training-data/stats-temp")
+def get_training_data_stats_temp() -> Dict[str, Any]:
+    """임시 학습 데이터 통계 조회 (사용자 클릭 데이터만)"""
+    try:
+        total_count = 0
+        label_counts = {0: 0, 1: 0, 2: 0}
+        for data_file in TEMP_TRAINING_DATA_DIR.glob("training_data_*.jsonl"):
+            try:
+                with open(data_file, "r", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        if line.strip():
+                            try:
+                                data = json.loads(line)
+                                total_count += 1
+                                label_counts[int(data.get("label", 0))] += 1
+                            except (json.JSONDecodeError, ValueError):
+                                continue
+            except Exception as e:
+                LOGGER.warning(f"Failed to read file {data_file}: {e}")
+                continue
+        return {
+            "total_samples": total_count,
+            "label_distribution": { LABEL_NAMES[k]: v for k, v in label_counts.items() },
+            "data_files": len(list(TEMP_TRAINING_DATA_DIR.glob("training_data_*.jsonl")))
+        }
+    except Exception as e:
+        LOGGER.error(f"Failed to get temp training data stats: {e}")
+        return {"error": str(e)}
+
 @app.get("/training-data/stats-all")
 def get_training_data_stats_all() -> Dict[str, Any]:
     """저장된 학습 데이터 통계 조회 (영구 + 임시 모두)"""
@@ -398,14 +474,22 @@ def get_training_data_stats_all() -> Dict[str, Any]:
         def accumulate_from_dir(base: Path, total_label_counts: Dict[int, int]) -> int:
             total = 0
             for data_file in base.glob("training_data_*.jsonl"):
-                with open(data_file, "r", encoding="utf-8") as f:
-                    for line in f:
-                        if line.strip():
-                            data = json.loads(line)
-                            total += 1
-                            lbl = int(data.get("label", 0))
-                            if lbl in total_label_counts:
-                                total_label_counts[lbl] += 1
+                try:
+                    with open(data_file, "r", encoding="utf-8", errors="ignore") as f:
+                        for line in f:
+                            if line.strip():
+                                try:
+                                    data = json.loads(line)
+                                    total += 1
+                                    lbl = int(data.get("label", 0))
+                                    if lbl in total_label_counts:
+                                        total_label_counts[lbl] += 1
+                                except (json.JSONDecodeError, ValueError):
+                                    # 손상된 라인은 건너뛰기
+                                    continue
+                except Exception as e:
+                    LOGGER.warning(f"Failed to read file {data_file}: {e}")
+                    continue
             return total
 
         label_counts = {0: 0, 1: 0, 2: 0}
@@ -426,12 +510,17 @@ def get_training_data_stats_all() -> Dict[str, Any]:
 @app.post("/model/reload")
 def reload_model() -> Dict[str, Any]:
 	"""모델을 다시 로드 (새로 학습된 모델 적용)"""
-	global TOKENIZER, MODEL, DEVICE
+	global TOKENIZER, MODEL, DEVICE, MODEL_DIR
 	
 	try:
 		LOGGER.info("Reloading model...")
+		# 업데이트된 모델이 있으면 사용
+		if UPDATED_MODEL_DIR.exists() and any(UPDATED_MODEL_DIR.iterdir()):
+			MODEL_DIR = UPDATED_MODEL_DIR
+		else:
+			MODEL_DIR = DEFAULT_MODEL_DIR
 		TOKENIZER, MODEL, DEVICE = _load_model(MODEL_DIR)
-		LOGGER.info("Model reloaded successfully")
+		LOGGER.info(f"Model reloaded successfully from {MODEL_DIR}")
 		return {"success": True, "message": "Model reloaded successfully"}
 	except Exception as e:
 		LOGGER.error(f"Failed to reload model: {e}")
@@ -457,6 +546,38 @@ def get_training_status() -> Dict[str, Any]:
 	"""재학습 상태 조회"""
 	return TRAINING_STATUS
 
+
+@app.get("/training-data/files-temp")
+def get_training_data_files_temp() -> Dict[str, Any]:
+	"""임시 학습 데이터 파일 목록 조회 (사용자 클릭 데이터)"""
+	try:
+		files = []
+		pattern = str(TEMP_TRAINING_DATA_DIR / "training_data_*.jsonl")
+		for file_path in glob.glob(pattern):
+			file_name = os.path.basename(file_path)
+			file_size = os.path.getsize(file_path)
+			file_date = datetime.fromtimestamp(os.path.getmtime(file_path))
+			
+			# 파일 내용 개수 계산
+			count = 0
+			with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+				for line in f:
+					if line.strip():
+						count += 1
+			
+			files.append({
+				"filename": file_name,
+				"path": file_path,
+				"size": file_size,
+				"count": count,
+				"date": file_date.isoformat()
+			})
+		
+		# 날짜순으로 정렬 (최신순)
+		files.sort(key=lambda x: x['date'], reverse=True)
+		return {"files": files}
+	except Exception as e:
+		raise HTTPException(status_code=500, detail=f"파일 목록 조회 실패: {str(e)}")
 
 @app.get("/training-data/files")
 def get_training_data_files() -> Dict[str, Any]:
@@ -490,6 +611,35 @@ def get_training_data_files() -> Dict[str, Any]:
 	except Exception as e:
 		raise HTTPException(status_code=500, detail=f"파일 목록 조회 실패: {str(e)}")
 
+
+@app.get("/training-data/files-temp/{filename}")
+def get_training_data_file_temp(filename: str) -> Dict[str, Any]:
+	"""특정 임시 학습 데이터 파일 내용 조회"""
+	try:
+		file_path = TEMP_TRAINING_DATA_DIR / filename
+		if not file_path.exists():
+			raise HTTPException(status_code=404, detail="파일을 찾을 수 없습니다")
+		
+		data = []
+		with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+			for line_num, line in enumerate(f, 1):
+				if line.strip():
+					try:
+						item = json.loads(line.strip())
+						item['line_number'] = line_num
+						data.append(item)
+					except json.JSONDecodeError:
+						continue
+		
+		return {
+			"filename": filename,
+			"count": len(data),
+			"data": data
+		}
+	except HTTPException:
+		raise
+	except Exception as e:
+		raise HTTPException(status_code=500, detail=f"파일 조회 실패: {str(e)}")
 
 @app.get("/training-data/files/{filename}")
 def get_training_data_file(filename: str) -> Dict[str, Any]:
@@ -621,4 +771,5 @@ def predict(req: PredictRequest) -> PredictResponse:
 if __name__ == "__main__":
 	import uvicorn
 	port = int(os.environ.get("PORT", 8000))
-	uvicorn.run("app:app", host="127.0.0.1", port=port, reload=False)
+	# exe 환경에서는 문자열 대신 직접 app 인스턴스를 전달해야 함
+	uvicorn.run(app, host="127.0.0.1", port=port, reload=False)

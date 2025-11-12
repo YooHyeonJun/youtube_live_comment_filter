@@ -1,0 +1,6 @@
+# 기본 requirements
+-r requirements.txt
+
+# 빌드용 추가 패키지
+pyinstaller>=5.13.0
+

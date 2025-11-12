@@ -57,8 +57,8 @@ class ChatDataset(Dataset):
             'labels': torch.tensor(label, dtype=torch.long)
         }
 
-def load_training_data(data_dir: Path) -> Tuple[List[str], List[int]]:
-    """학습 데이터 로드"""
+def load_training_data(data_dir: Path, augment_factor: int = 3000) -> Tuple[List[str], List[int]]:
+    """학습 데이터 로드 및 증강"""
     texts = []
     labels = []
     
@@ -71,7 +71,7 @@ def load_training_data(data_dir: Path) -> Tuple[List[str], List[int]]:
     
     for data_file in data_files:
         logger.info(f"Loading {data_file}")
-        with open(data_file, 'r', encoding='utf-8') as f:
+        with open(data_file, 'r', encoding='utf-8', errors='ignore') as f:
             for line in f:
                 if line.strip():
                     try:
@@ -81,7 +81,24 @@ def load_training_data(data_dir: Path) -> Tuple[List[str], List[int]]:
                     except json.JSONDecodeError as e:
                         logger.warning(f"Failed to parse line: {e}")
     
-    logger.info(f"Loaded {len(texts)} training samples")
+    original_count = len(texts)
+    logger.info(f"Loaded {original_count} original training samples")
+    
+    # 데이터 증강: 각 샘플을 augment_factor번 복제
+    if augment_factor > 1 and original_count > 0:
+        logger.info(f"Augmenting data by factor of {augment_factor}...")
+        augmented_texts = []
+        augmented_labels = []
+        
+        for text, label in zip(texts, labels):
+            for _ in range(augment_factor):
+                augmented_texts.append(text)
+                augmented_labels.append(label)
+        
+        texts = augmented_texts
+        labels = augmented_labels
+        logger.info(f"Augmented to {len(texts)} training samples (x{augment_factor})")
+    
     return texts, labels
 
 def compute_metrics(eval_pred):
@@ -107,7 +124,8 @@ def train_model(
     batch_size: int = 16,
     learning_rate: float = 2e-5,
     warmup_steps: int = 100,
-    max_length: int = 256
+    max_length: int = 256,
+    augment_factor: int = 3000
 ):
     """모델 추가 학습"""
     
@@ -121,8 +139,8 @@ def train_model(
     model = AutoModelForSequenceClassification.from_pretrained(str(model_dir))
     model.to(device)
     
-    # 학습 데이터 로드
-    texts, labels = load_training_data(training_data_dir)
+    # 학습 데이터 로드 및 증강
+    texts, labels = load_training_data(training_data_dir, augment_factor=augment_factor)
     if len(texts) == 0:
         logger.error("No training data available")
         return False
