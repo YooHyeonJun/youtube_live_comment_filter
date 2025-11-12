@@ -5,6 +5,7 @@ function setValues(v){ return new Promise(r => chrome.storage.local.set(v, r)); 
 async function getTrainingStats() {
 	const { serverUrl } = await getValues();
 	try {
+		// 영구 데이터만 (사용자가 클릭해서 수집한 데이터)
 		const response = await fetch(`${serverUrl}/training-data/stats`);
 		if (response.ok) {
 			return await response.json();
@@ -20,6 +21,25 @@ async function getTrainingFiles() {
     const res = await fetch(`${serverUrl}/training-data/files`);
     if (!res.ok) return { files: [] };
     return await res.json();
+}
+
+async function getTrainingFileContent(filename) {
+    const { serverUrl } = await getValues();
+    const res = await fetch(`${serverUrl}/training-data/files/${filename}`);
+    if (!res.ok) return { data: [] };
+    return await res.json();
+}
+
+async function deleteTrainingFile(filename) {
+    const { serverUrl } = await getValues();
+    const res = await fetch(`${serverUrl}/training-data/files/${filename}`, { method: 'DELETE' });
+    return res.ok;
+}
+
+async function deleteTrainingLine(filename, lineNumber) {
+    const { serverUrl } = await getValues();
+    const res = await fetch(`${serverUrl}/training-data/files/${filename}/lines/${lineNumber}`, { method: 'DELETE' });
+    return res.ok;
 }
 
 async function deleteAllTrainingData() {
@@ -199,6 +219,7 @@ async function initPopup() {
             e.preventDefault();
             e.stopPropagation();
             await updateTrainingStats();
+            await renderTrainingDataFiles();
         };
     }
     if (deleteBtn) {
@@ -212,6 +233,7 @@ async function initPopup() {
             if (retrainBtn) retrainBtn.disabled = true; // 오동작 방지
             const ok = await deleteAllTrainingData(); // 이제 영구만 삭제
             await updateTrainingStats();
+            await renderTrainingDataFiles();
             deleteBtn.textContent = ok ? '삭제 완료' : '삭제 실패';
             setTimeout(() => {
                 deleteBtn.disabled = false;
@@ -219,6 +241,25 @@ async function initPopup() {
                 if (retrainBtn) retrainBtn.disabled = false;
                 BUSY = false;
             }, 1500);
+        };
+    }
+    
+    // 데이터 보기 토글 버튼
+    const toggleDataBtn = document.getElementById('toggleDataView');
+    const dataViewSection = document.getElementById('dataViewSection');
+    if (toggleDataBtn && dataViewSection) {
+        toggleDataBtn.onclick = async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (dataViewSection.style.display === 'none') {
+                dataViewSection.style.display = 'block';
+                toggleDataBtn.textContent = '📋 수집된 데이터 숨기기';
+                // 처음 열 때 데이터 로드
+                await renderTrainingDataFiles();
+            } else {
+                dataViewSection.style.display = 'none';
+                toggleDataBtn.textContent = '📋 수집된 데이터 보기';
+            }
         };
     }
 }
@@ -329,6 +370,135 @@ async function installRuleMaskHandlers() {
   // 최초 렌더
   await renderRules();
   await renderMasks();
+}
+
+async function renderTrainingDataFiles() {
+    const dataFilesDiv = document.getElementById('dataFiles');
+    if (!dataFilesDiv) return;
+    
+    const result = await getTrainingFiles();
+    const files = result.files || [];
+    
+    if (files.length === 0) {
+        dataFilesDiv.innerHTML = '<div class="help">저장된 학습 데이터가 없습니다.</div>';
+        return;
+    }
+    
+    let html = '<div style="max-height: 300px; overflow-y: auto;">';
+    for (const file of files) {
+        html += `
+            <div class="data-file-item" style="margin-bottom: 12px; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 4px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                    <div style="font-weight: 600;">${file.filename}</div>
+                    <button class="btn btn-small btn-danger delete-file-btn" data-filename="${file.filename}">파일 삭제</button>
+                </div>
+                <div style="font-size: 12px; color: #aaa;">
+                    ${file.count}개 항목 | ${(file.size / 1024).toFixed(1)}KB | ${new Date(file.date).toLocaleDateString()}
+                </div>
+                <div style="margin-top: 8px;">
+                    <button class="btn btn-small view-content-btn" data-filename="${file.filename}">내용 보기</button>
+                </div>
+                <div class="file-content" id="content-${file.filename}" style="display: none; margin-top: 8px;"></div>
+            </div>
+        `;
+    }
+    html += '</div>';
+    
+    dataFilesDiv.innerHTML = html;
+    
+    // 파일 삭제 버튼
+    dataFilesDiv.querySelectorAll('.delete-file-btn').forEach(btn => {
+        btn.onclick = async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const filename = btn.dataset.filename;
+            if (!confirm(`${filename}을(를) 삭제하시겠습니까?`)) return;
+            
+            btn.disabled = true;
+            btn.textContent = '삭제 중...';
+            const ok = await deleteTrainingFile(filename);
+            if (ok) {
+                await updateTrainingStats();
+                await renderTrainingDataFiles();
+            } else {
+                alert('파일 삭제 실패');
+                btn.disabled = false;
+                btn.textContent = '파일 삭제';
+            }
+        };
+    });
+    
+    // 내용 보기 버튼
+    dataFilesDiv.querySelectorAll('.view-content-btn').forEach(btn => {
+        btn.onclick = async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const filename = btn.dataset.filename;
+            const contentDiv = document.getElementById(`content-${filename}`);
+            
+            if (contentDiv.style.display === 'none') {
+                // 내용 로드 및 표시
+                btn.textContent = '로딩...';
+                btn.disabled = true;
+                
+                const result = await getTrainingFileContent(filename);
+                const data = result.data || [];
+                
+                if (data.length === 0) {
+                    contentDiv.innerHTML = '<div class="help">데이터가 없습니다.</div>';
+                } else {
+                    let contentHtml = '<div style="max-height: 200px; overflow-y: auto; font-size: 11px;">';
+                    for (const item of data) {
+                        const labelName = item.label === 0 ? '정상' : item.label === 1 ? '약간 악성' : '악성';
+                        const labelColor = item.label === 0 ? '#5bc0de' : item.label === 1 ? '#f0ad4e' : '#d9534f';
+                        contentHtml += `
+                            <div style="padding: 6px; margin-bottom: 4px; background: rgba(0,0,0,0.2); border-radius: 3px; display: flex; justify-content: space-between; align-items: start;">
+                                <div style="flex: 1;">
+                                    <span style="color: ${labelColor}; font-weight: 600;">[${labelName}]</span>
+                                    <span style="margin-left: 8px;">${item.text.substring(0, 80)}${item.text.length > 80 ? '...' : ''}</span>
+                                </div>
+                                <button class="btn btn-small delete-line-btn" data-filename="${filename}" data-line="${item.line_number}" style="margin-left: 8px;">삭제</button>
+                            </div>
+                        `;
+                    }
+                    contentHtml += '</div>';
+                    contentDiv.innerHTML = contentHtml;
+                    
+                    // 라인 삭제 버튼
+                    contentDiv.querySelectorAll('.delete-line-btn').forEach(lineBtn => {
+                        lineBtn.onclick = async (e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            const fn = lineBtn.dataset.filename;
+                            const ln = parseInt(lineBtn.dataset.line);
+                            
+                            lineBtn.disabled = true;
+                            lineBtn.textContent = '삭제중';
+                            const ok = await deleteTrainingLine(fn, ln);
+                            if (ok) {
+                                await updateTrainingStats();
+                                // 내용 다시 로드
+                                btn.click();
+                                setTimeout(() => btn.click(), 100);
+                            } else {
+                                alert('삭제 실패');
+                                lineBtn.disabled = false;
+                                lineBtn.textContent = '삭제';
+                            }
+                        };
+                    });
+                }
+                
+                contentDiv.style.display = 'block';
+                btn.textContent = '내용 숨기기';
+                btn.disabled = false;
+            } else {
+                // 숨기기
+                contentDiv.style.display = 'none';
+                btn.textContent = '내용 보기';
+            }
+        };
+    });
 }
 
 // 기존 initPopup 끝부분에서 호출(또는 DOMContentLoaded 시점)

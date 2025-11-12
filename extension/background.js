@@ -67,7 +67,7 @@ async function classify(texts) {
   }
 }
 
-async function sendTrainingData(text, label, userId = 'anonymous', useTemp = true) {
+async function sendTrainingData(text, label, userId = 'anonymous', useTemp = false) {
   const { serverUrl } = await getSettings();
   const url = `${serverUrl.replace(/\/$/, '')}/training-data${useTemp ? '?temp=1' : ''}`;
   try {

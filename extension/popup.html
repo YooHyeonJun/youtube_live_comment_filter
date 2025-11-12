@@ -66,6 +66,22 @@
         <div>정상: <span id="normalCount">0</span> | 약간 악성: <span id="mildCount">0</span> | 악성: <span id="maliciousCount">0</span></div>
       </div>
       <div class="sep"></div>
+      
+      <!-- 수집된 데이터 상세 보기 (토글) -->
+      <div style="margin-bottom: 8px;">
+        <button id="toggleDataView" class="btn btn-secondary" style="width: 100%;">📋 수집된 데이터 보기</button>
+      </div>
+      <div id="dataViewSection" style="display: none;">
+        <div class="data-management" style="margin-bottom: 8px;">
+          <button class="btn btn-small btn-secondary" id="refreshData">새로고침</button>
+          <button class="btn btn-small btn-danger" id="deleteAllData">전체 삭제</button>
+        </div>
+        <div class="data-files" id="dataFiles">
+          <!-- 학습 데이터 파일 목록이 여기에 표시됩니다 -->
+        </div>
+      </div>
+      
+      <div class="sep"></div>
       <div class="row">
         <div class="label">모델 관리</div>
         <button id="reloadModel" class="btn">모델 재로드</button>
@@ -74,28 +90,12 @@
         <div class="label">재학습</div>
         <button id="retrainModel" class="btn btn-primary">재학습 시작</button>
       </div>
-      <div class="help">새로 학습된 모델을 적용하려면 모델 재로드를 클릭하세요.</div>
-      <div class="help">충분한 데이터가 수집되면 재학습을 시작할 수 있습니다.</div>
       <div class="sep"></div>
       <div class="training-progress" id="trainingProgress" style="display: none;">
         <div class="progress-bar">
           <div class="progress-fill" id="progressFill"></div>
         </div>
         <div class="progress-text" id="progressText">학습 준비 중...</div>
-      </div>
-    </div>
-
-    <!-- 학습 데이터 관리 섹션 -->
-    <div class="card">
-      <div class="title">학습 데이터 관리</div>
-      <div class="data-management">
-        <button class="btn btn-secondary" id="refreshData">새로고침</button>
-        <button class="btn btn-danger" id="deleteAllData">전체 삭제</button>
-      </div>
-      <div class="help">학습 데이터 파일을 관리하고 삭제할 수 있습니다.</div>
-      <div class="sep"></div>
-      <div class="data-files" id="dataFiles">
-        <!-- 학습 데이터 파일 목록이 여기에 표시됩니다 -->
       </div>
     </div>
     
