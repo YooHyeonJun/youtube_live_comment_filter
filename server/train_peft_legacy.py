@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-KcELECTRA incremental finetuning with BitFit
+LEGACY: PEFT adapter training (LoRA / Prefix / Linear)
 - Keeps base weights stable
-- Only trains bias and LayerNorm parameters
+- Small adapter artifacts
+- Use train.py for BitFit instead
 """
 
 import os
@@ -28,8 +29,17 @@ from transformers import (
     EarlyStoppingCallback,
 )
 
+# ---- PEFT ----
+from peft import (
+    get_peft_model,
+    LoraConfig,
+    PrefixTuningConfig,
+    TaskType,
+    PeftModel,
+)
+
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
-log = logging.getLogger("kcelectra_bitfit")
+log = logging.getLogger("kcelectra_peft_legacy")
 
 
 class ChatDataset(Dataset):
@@ -55,6 +65,7 @@ class ChatDataset(Dataset):
             "attention_mask": enc["attention_mask"].squeeze(0),
             "labels": torch.tensor(int(self.labels[i]), dtype=torch.long),
         }
+
 
 def load_training_data(data_dir: Path) -> Tuple[List[str], List[int]]:
     texts: List[str] = []
@@ -103,32 +114,63 @@ class WLossTrainer(Trainer):
         return (loss, outputs) if return_outputs else loss
 
 
-def apply_bitfit(model):
-    """Enable training for classifier, bias, and LayerNorm parameters only"""
+def lora_dropdown(p: float) -> float:
+    p = float(p)
+    if p < 0.0:
+        p = 0.0
+    if p > 0.5:
+        p = 0.5
+    return p
+
+
+def apply_peft(method: str, model, target_modules=None, lora_r=8, lora_alpha=16, lora_dropout=0.05, prefix_len=16):
+    method = method.lower()
+    # keep classifier trainable always
     for n, p in model.named_parameters():
-        if "classifier" in n:
-            p.requires_grad = True
-        elif n.endswith(".bias") or ("LayerNorm" in n):
-            p.requires_grad = True
-        else:
-            p.requires_grad = False
-    return model
+        p.requires_grad = ("classifier" in n)
+
+    if method == "linear":
+        return model
+
+    if method == "lora":
+        if target_modules is None:
+            target_modules = ["query", "key", "value", "dense"]
+        peft_cfg = LoraConfig(
+            task_type=TaskType.SEQ_CLS,
+            r=lora_r,
+            lora_alpha=lora_alpha,
+            lora_dropout=lora_dropdown(lora_dropout),
+            target_modules=target_modules,
+            bias="none",
+        )
+        return get_peft_model(model, peft_cfg)
+
+    if method == "prefix":
+        peft_cfg = PrefixTuningConfig(task_type=TaskType.SEQ_CLS, num_virtual_tokens=prefix_len)
+        return get_peft_model(model, peft_cfg)
+
+    raise ValueError(f"unknown method: {method}. Supported: linear, lora, prefix")
 
 
 def train(
     model_dir: Path,
     training_data_dir: Path,
     output_dir: Path,
+    method: str = "lora",
     max_length: int = 256,
     batch_size: int = 16,
     epochs: int = 1,
     lr: float = 5e-6,
     warmup_ratio: float = 0.06,
     use_class_weights: bool = True,
+    lora_r: int = 8,
+    lora_alpha: int = 16,
+    lora_dropout: float = 0.05,
+    prefix_len: int = 16,
     seed: int = 42,
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    log.info(f"device: {device} | method: bitfit")
+    log.info(f"device: {device} | method: {method}")
 
     config = AutoConfig.from_pretrained(str(model_dir))
     tokenizer = AutoTokenizer.from_pretrained(str(model_dir), use_fast=True)
@@ -168,7 +210,15 @@ def train(
                 weights.append(total / (num_labels * c_count))
         class_weights = torch.tensor(weights, dtype=torch.float)
 
-    model = apply_bitfit(model)
+    model = apply_peft(
+        method=method,
+        model=model,
+        target_modules=["query", "key", "value", "dense"],
+        lora_r=lora_r,
+        lora_alpha=lora_alpha,
+        lora_dropout=lora_dropout,
+        prefix_len=prefix_len,
+    )
     model.to(device)
 
     training_args = TrainingArguments(
@@ -209,10 +259,10 @@ def train(
     log.info(f"eval: {eval_res}")
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    # BitFit saves full model (not adapter)
-    trainer.save_model()
+    # PEFT adapter is always applied here
+    model.save_pretrained(str(output_dir))
     tokenizer.save_pretrained(str(output_dir))
-    log.info(f"saved model to {output_dir}")
+    log.info(f"saved adapter to {output_dir}")
 
     return True
 
@@ -220,31 +270,42 @@ def train(
 def main():
     import argparse
 
-    ap = argparse.ArgumentParser(description="KcELECTRA BitFit finetuning")
+    ap = argparse.ArgumentParser(description="KcELECTRA PEFT adapter training (LEGACY)")
     ap.add_argument("--model-dir", type=str, required=True)
     ap.add_argument("--training-data-dir", type=str, required=True)
     ap.add_argument("--output-dir", type=str, required=True)
+    ap.add_argument("--method", type=str, default="lora", choices=["linear", "lora", "prefix"])
     ap.add_argument("--epochs", type=int, default=1)
     ap.add_argument("--batch-size", type=int, default=16)
     ap.add_argument("--lr", type=float, default=5e-6)
     ap.add_argument("--warmup-ratio", type=float, default=0.06)
     ap.add_argument("--max-length", type=int, default=256)
     ap.add_argument("--no-class-weights", action="store_true")
+    ap.add_argument("--lora-r", type=int, default=8)
+    ap.add_argument("--lora-alpha", type=int, default=16)
+    ap.add_argument("--lora-dropout", type=float, default=0.05)
+    ap.add_argument("--prefix-len", type=int, default=16)
     args = ap.parse_args()
 
     ok = train(
         model_dir=Path(args.model_dir).resolve(),
         training_data_dir=Path(args.training_data_dir).resolve(),
         output_dir=Path(args.output_dir).resolve(),
+        method=args.method,
         max_length=args.max_length,
         batch_size=args.batch_size,
         epochs=args.epochs,
         lr=args.lr,
         warmup_ratio=args.warmup_ratio,
         use_class_weights=(not args.no_class_weights),
+        lora_r=args.lora_r,
+        lora_alpha=args.lora_alpha,
+        lora_dropout=args.lora_dropout,
+        prefix_len=args.prefix_len,
     )
     return 0 if ok else 1
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

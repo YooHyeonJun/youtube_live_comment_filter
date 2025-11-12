@@ -117,6 +117,19 @@ const STATE = {
     if (header) header.appendChild(badge);
   }
 
+  // 메시지 DOM이 재렌더링되어 배지가 사라졌을 때 복구용 유틸
+  function reapplyBadgeIfMissingFromHost(host) {
+    if (!host) return;
+    const msgEl = getMessageElFromRenderer(host);
+    if (!msgEl) return;
+    const id = messageKey(msgEl);
+    if (!STATE.labelOfMessageId.has(id)) return;
+    const label = STATE.labelOfMessageId.get(id);
+    if (!host.querySelector('.ylcf-badge')) {
+      applyBadge(msgEl, label);
+    }
+  }
+
   /* ---------------- 학습 데이터 수집 ---------------- */
 
   function showLabelingDialog(text) {
@@ -442,6 +455,16 @@ const STATE = {
         }
       }
 
+      // 기존 메시지 내부가 재렌더되어 배지가 사라진 경우 복구
+      for (const rec of records) {
+        const t = rec.target;
+        let base = null;
+        if (t instanceof Element) base = t; else if (t && t.parentElement) base = t.parentElement;
+        if (!base) continue;
+        const host = base.closest && base.closest('yt-live-chat-text-message-renderer');
+        if (host) reapplyBadgeIfMissingFromHost(host);
+      }
+
       // 대량 DOM 추가 감지 시 잠시 모아 처리 (버스트 흡수)
       if (addedCount >= 120) {
         STATE.bulkModeUntilTs = Date.now() + 1500;
@@ -449,7 +472,7 @@ const STATE = {
       scheduleFlush();
     });
   
-    observer.observe(root.body || root, { childList: true, subtree: true });
+    observer.observe(root.body || root, { childList: true, subtree: true, characterData: true });
     getChatMessageElementsUnique().forEach(el => {
       enqueueForClassification(el);
       setupTrainingClick(el);

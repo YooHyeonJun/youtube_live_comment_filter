@@ -41,3 +41,5 @@ server/dist/
 *.pkg
 *.pyz
 
+# Adapters
+adapters/
