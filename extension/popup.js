@@ -1,9 +1,12 @@
-const DEF = { enabled: true, minSeverityToHide: 2, action: 'hide', showBadge: true, trainingMode: false, serverUrl: 'http://127.0.0.1:8000', rules: [], masks: [] };
+const DEF = { enabled: true, minSeverityToHide: 2, action: 'hide', showBadge: true, trainingMode: false, serverUrl: 'http://127.0.0.1:8000', useExternalServer: false, rules: [], masks: [] };
 function getValues(){ return new Promise(r => chrome.storage.local.get(DEF, r)); }
 function setValues(v){ return new Promise(r => chrome.storage.local.set(v, r)); }
 
 async function getTrainingStats() {
-	const { serverUrl } = await getValues();
+	const { serverUrl, useExternalServer } = await getValues();
+	if (useExternalServer) {
+		return { total_samples: 0, label_distribution: { 정상: 0, 약간_악성: 0, 악성: 0 } };
+	}
 	try {
 		// 영구 데이터만 (사용자가 클릭해서 수집한 데이터)
 		const response = await fetch(`${serverUrl}/training-data/stats`);
@@ -17,45 +20,54 @@ async function getTrainingStats() {
 }
 
 async function getTrainingFiles() {
-    const { serverUrl } = await getValues();
+    const { serverUrl, useExternalServer } = await getValues();
+    if (useExternalServer) return { files: [] };
     const res = await fetch(`${serverUrl}/training-data/files`);
     if (!res.ok) return { files: [] };
     return await res.json();
 }
 
 async function getTrainingFileContent(filename) {
-    const { serverUrl } = await getValues();
+    const { serverUrl, useExternalServer } = await getValues();
+    if (useExternalServer) return { data: [] };
     const res = await fetch(`${serverUrl}/training-data/files/${filename}`);
     if (!res.ok) return { data: [] };
     return await res.json();
 }
 
 async function deleteTrainingFile(filename) {
-    const { serverUrl } = await getValues();
+    const { serverUrl, useExternalServer } = await getValues();
+    if (useExternalServer) return false;
     const res = await fetch(`${serverUrl}/training-data/files/${filename}`, { method: 'DELETE' });
     return res.ok;
 }
 
 async function deleteTrainingLine(filename, lineNumber) {
-    const { serverUrl } = await getValues();
+    const { serverUrl, useExternalServer } = await getValues();
+    if (useExternalServer) return false;
     const res = await fetch(`${serverUrl}/training-data/files/${filename}/lines/${lineNumber}`, { method: 'DELETE' });
     return res.ok;
 }
 
 async function deleteAllTrainingData() {
-    const { serverUrl } = await getValues();
+    const { serverUrl, useExternalServer } = await getValues();
+    if (useExternalServer) return false;
     const res = await fetch(`${serverUrl}/training-data/all`, { method: 'DELETE' });
     return res.ok;
 }
 
 async function deleteTempOnly() {
-    const { serverUrl } = await getValues();
+    const { serverUrl, useExternalServer } = await getValues();
+    if (useExternalServer) return false;
     const res = await fetch(`${serverUrl}/training-data/temp`, { method: 'DELETE' });
     return res.ok;
 }
 
 async function startRetraining() {
-	const { serverUrl } = await getValues();
+	const { serverUrl, useExternalServer } = await getValues();
+	if (useExternalServer) {
+		return { success: false, message: '외부 서버 모드에서는 재학습을 지원하지 않습니다.' };
+	}
 	try {
 		const response = await fetch(`${serverUrl}/model/retrain`, { method: 'POST' });
 		return await response.json();
@@ -66,7 +78,10 @@ async function startRetraining() {
 }
 
 async function reloadModel() {
-	const { serverUrl } = await getValues();
+	const { serverUrl, useExternalServer } = await getValues();
+	if (useExternalServer) {
+		return { success: false, message: '외부 서버 모드에서는 모델 재로드를 지원하지 않습니다.' };
+	}
 	try {
 		const response = await fetch(`${serverUrl}/model/reload`, { method: 'POST' });
 		return await response.json();
@@ -77,7 +92,10 @@ async function reloadModel() {
 }
 
 async function getTrainingStatus() {
-	const { serverUrl } = await getValues();
+	const { serverUrl, useExternalServer } = await getValues();
+	if (useExternalServer) {
+		return { is_training: false, progress: 0, message: '', error: null };
+	}
 	try {
 		const response = await fetch(`${serverUrl}/model/training-status`);
 		if (response.ok) {
@@ -147,6 +165,18 @@ async function initPopup() {
 	badge.checked = !!v.showBadge;
 	trainingMode.checked = !!v.trainingMode;
     if (enabled) enabled.checked = v.enabled !== false;
+	
+	// 외부 서버 모드일 때 학습 관련 기능 비활성화
+	if (v.useExternalServer) {
+		if (trainingMode) {
+			trainingMode.checked = false;
+			trainingMode.disabled = true;
+		}
+	} else {
+		if (trainingMode) {
+			trainingMode.disabled = false;
+		}
+	}
 	
 	chrome.action.getBadgeText({}, t => count.textContent = t || '0');
 	

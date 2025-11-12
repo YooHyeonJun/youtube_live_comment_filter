@@ -16,9 +16,23 @@
 </head>
 <body>
 	<h2>설정</h2>
-	<label>서버 주소</label>
-	<input id="serverUrl" placeholder="http://127.0.0.1:8000"/>
-	<div class="small">server/run.bat 으로 로컬 서버 실행 후 연결하세요.</div>
+	
+	<label>서버 모드</label>
+	<div style="margin-bottom: 12px;">
+		<label style="display:inline-block; margin-right: 20px;">
+			<input type="radio" name="serverMode" id="localServer" value="local" checked/> 로컬 서버 (localhost:8000)
+		</label>
+		<label style="display:inline-block;">
+			<input type="radio" name="serverMode" id="externalServer" value="external"/> 외부 서버 (localhost:3000)
+		</label>
+	</div>
+	<div class="small">외부 서버는 테스트용입니다. /api/predict로만 예측 요청을 보냅니다.</div>
+	
+	<div id="localServerSettings">
+		<label>로컬 서버 주소</label>
+		<input id="serverUrl" placeholder="http://127.0.0.1:8000"/>
+		<div class="small">server/run.bat 으로 로컬 서버 실행 후 연결하세요.</div>
+	</div>
 
 	<label>차단 기준</label>
 	<select id="minSeverityToHide">
@@ -44,32 +58,79 @@
 	<pre id="out" class="small"></pre>
 
 	<script>
-		const DEFAULTS = { serverUrl: 'http://127.0.0.1:8000', minSeverityToHide: 2, action: 'hide', showBadge: true };
+		const DEFAULTS = { serverUrl: 'http://127.0.0.1:8000', useExternalServer: false, minSeverityToHide: 2, action: 'hide', showBadge: true };
 		function getValues(){
 			return new Promise(r=> chrome.storage.local.get(DEFAULTS, r));
 		}
 		function setValues(v){
 			return new Promise(r=> chrome.storage.local.set(v, r));
 		}
+		
+		function updateServerModeUI() {
+			const isExternal = externalServer.checked;
+			const localSettings = document.getElementById('localServerSettings');
+			if (localSettings) {
+				localSettings.style.display = isExternal ? 'none' : 'block';
+			}
+		}
+		
 		async function init(){
 			const v = await getValues();
 			serverUrl.value = v.serverUrl;
 			minSeverityToHide.value = String(v.minSeverityToHide);
 			action.value = v.action;
 			showBadge.checked = !!v.showBadge;
+			
+			// 서버 모드 설정
+			if (v.useExternalServer) {
+				externalServer.checked = true;
+			} else {
+				localServer.checked = true;
+			}
+			updateServerModeUI();
+			
+			// 라디오 버튼 변경 이벤트
+			localServer.onchange = updateServerModeUI;
+			externalServer.onchange = updateServerModeUI;
 		}
+		
 		save.onclick = async () => {
-			await setValues({ serverUrl: serverUrl.value, minSeverityToHide: Number(minSeverityToHide.value), action: action.value, showBadge: showBadge.checked });
+			const useExternal = externalServer.checked;
+			await setValues({ 
+				serverUrl: serverUrl.value, 
+				useExternalServer: useExternal,
+				minSeverityToHide: Number(minSeverityToHide.value), 
+				action: action.value, 
+				showBadge: showBadge.checked 
+			});
 			out.textContent = '저장됨';
 		};
+		
 		test.onclick = async () => {
-			const url = serverUrl.value.replace(/\/$/,'') + '/health';
-			out.textContent = '요청중...';
-			try {
-				const res = await fetch(url);
-				out.textContent = res.ok ? await res.text() : `HTTP ${res.status}`;
-			} catch (e) {
-				out.textContent = String(e);
+			const useExternal = externalServer.checked;
+			let url;
+			if (useExternal) {
+				url = 'http://localhost:3000/api/predict';
+				out.textContent = '외부 서버 테스트 중...';
+				try {
+					const res = await fetch(url, {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({ texts: ['테스트'] })
+					});
+					out.textContent = res.ok ? '외부 서버 연결 성공 ✓' : `HTTP ${res.status}`;
+				} catch (e) {
+					out.textContent = '외부 서버 연결 실패: ' + String(e);
+				}
+			} else {
+				url = serverUrl.value.replace(/\/$/,'') + '/health';
+				out.textContent = '로컬 서버 테스트 중...';
+				try {
+					const res = await fetch(url);
+					out.textContent = res.ok ? await res.text() : `HTTP ${res.status}`;
+				} catch (e) {
+					out.textContent = '로컬 서버 연결 실패: ' + String(e);
+				}
 			}
 		};
 		init();

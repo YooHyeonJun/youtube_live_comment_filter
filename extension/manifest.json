@@ -5,7 +5,11 @@
 	"description": "로컬 모델 서버로 유튜브 라이브 채팅을 분류하고 차단합니다.",
 	"permissions": ["storage", "scripting", "activeTab"],
 	"host_permissions": [
-		"https://www.youtube.com/*"
+		"https://www.youtube.com/*",
+		"http://localhost:8000/*",
+		"http://127.0.0.1:8000/*",
+		"http://localhost:3000/*",
+		"http://127.0.0.1:3000/*"
 	],
 	"background": {
 		"service_worker": "background.js"
