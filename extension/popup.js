@@ -4,9 +4,10 @@ function setValues(v){ return new Promise(r => chrome.storage.local.set(v, r)); 
 
 async function getTrainingStats() {
 	const { serverUrl } = await getValues();
+	const base = getTrainingServerBase(serverUrl);
 	try {
 		// 영구 데이터만 (사용자가 클릭해서 수집한 데이터)
-		const response = await fetch(`${serverUrl}/training-data/stats`);
+		const response = await fetch(`${base}/training-data/stats`);
 		if (response.ok) {
 			return await response.json();
 		}
@@ -18,44 +19,61 @@ async function getTrainingStats() {
 
 async function getTrainingFiles() {
     const { serverUrl } = await getValues();
-    const res = await fetch(`${serverUrl}/training-data/files`);
+    const base = getTrainingServerBase(serverUrl);
+    const res = await fetch(`${base}/training-data/files`);
     if (!res.ok) return { files: [] };
     return await res.json();
 }
 
 async function getTrainingFileContent(filename) {
     const { serverUrl } = await getValues();
-    const res = await fetch(`${serverUrl}/training-data/files/${filename}`);
+    const base = getTrainingServerBase(serverUrl);
+    const res = await fetch(`${base}/training-data/files/${filename}`);
     if (!res.ok) return { data: [] };
     return await res.json();
 }
 
 async function deleteTrainingFile(filename) {
     const { serverUrl } = await getValues();
-    const res = await fetch(`${serverUrl}/training-data/files/${filename}`, { method: 'DELETE' });
+    const base = getTrainingServerBase(serverUrl);
+    const res = await fetch(`${base}/training-data/files/${filename}`, { method: 'DELETE' });
     return res.ok;
 }
 
 async function deleteTrainingLine(filename, lineNumber) {
     const { serverUrl } = await getValues();
-    const res = await fetch(`${serverUrl}/training-data/files/${filename}/lines/${lineNumber}`, { method: 'DELETE' });
+    const base = getTrainingServerBase(serverUrl);
+    const res = await fetch(`${base}/training-data/files/${filename}/lines/${lineNumber}`, { method: 'DELETE' });
     return res.ok;
 }
 
 async function deleteAllTrainingData() {
     const { serverUrl } = await getValues();
-    const res = await fetch(`${serverUrl}/training-data/all`, { method: 'DELETE' });
+    const base = getTrainingServerBase(serverUrl);
+    const res = await fetch(`${base}/training-data/all`, { method: 'DELETE' });
     return res.ok;
 }
 
 async function deleteTempOnly() {
     const { serverUrl } = await getValues();
-    const res = await fetch(`${serverUrl}/training-data/temp`, { method: 'DELETE' });
+    const base = getTrainingServerBase(serverUrl);
+    const res = await fetch(`${base}/training-data/temp`, { method: 'DELETE' });
     return res.ok;
 }
 
 async function startRetraining() {
 	const { serverUrl } = await getValues();
+	// 외부 서버(포트 3000)는 재학습 비활성화
+	try {
+		const u = new URL(serverUrl || '');
+		if (u.port === '3000' || /223\.194\.46\.69/.test(u.hostname)) {
+			return { success: false, message: '외부 서버에서는 재학습을 지원하지 않습니다.' };
+		}
+	} catch {
+		if (/:3000$/.test(String(serverUrl||''))) {
+			return { success: false, message: '외부 서버에서는 재학습을 지원하지 않습니다.' };
+		}
+	}
 	try {
 		const response = await fetch(`${serverUrl}/model/retrain`, { method: 'POST' });
 		return await response.json();
@@ -67,6 +85,17 @@ async function startRetraining() {
 
 async function reloadModel() {
 	const { serverUrl } = await getValues();
+	// 외부 서버(포트 3000)는 모델 재로드 비활성화
+	try {
+		const u = new URL(serverUrl || '');
+		if (u.port === '3000' || /223\.194\.46\.69/.test(u.hostname)) {
+			return { success: false, message: '외부 서버에서는 모델 재로드를 지원하지 않습니다.' };
+		}
+	} catch {
+		if (/:3000$/.test(String(serverUrl||''))) {
+			return { success: false, message: '외부 서버에서는 모델 재로드를 지원하지 않습니다.' };
+		}
+	}
 	try {
 		const response = await fetch(`${serverUrl}/model/reload`, { method: 'POST' });
 		return await response.json();
@@ -78,6 +107,17 @@ async function reloadModel() {
 
 async function getTrainingStatus() {
 	const { serverUrl } = await getValues();
+	// 외부 서버(포트 3000)는 상태 조회 비활성화
+	try {
+		const u = new URL(serverUrl || '');
+		if (u.port === '3000' || /223\.194\.46\.69/.test(u.hostname)) {
+			return { is_training: false, progress: 0, message: '외부 서버 모드', error: null };
+		}
+	} catch {
+		if (/:3000$/.test(String(serverUrl||''))) {
+			return { is_training: false, progress: 0, message: '외부 서버 모드', error: null };
+		}
+	}
 	try {
 		const response = await fetch(`${serverUrl}/model/training-status`);
 		if (response.ok) {
@@ -132,12 +172,32 @@ async function updateTrainingStatus() {
 }
 
 let BUSY = false;
+const SELECTED_FILES = new Set();
 
+function getTrainingServerBase(serverUrl) {
+	try {
+		const u = new URL(serverUrl || '');
+		if (u.port === '3000' || /223\.194\.46\.69/.test(u.hostname)) {
+			return 'http://127.0.0.1:8000';
+		}
+	} catch {
+		if (/:3000$/.test(String(serverUrl||''))) {
+			return 'http://127.0.0.1:8000';
+		}
+	}
+	return (serverUrl || '').replace(/\/$/, '');
+}
 async function initPopup() {
 	const v = await getValues();
 	const min = document.getElementById('min');
 	const act = document.getElementById('act');
 	const badge = document.getElementById('badge');
+	const serverUrlInput = document.getElementById('serverUrlInput');
+	const applyServerUrl = document.getElementById('applyServerUrl');
+	const testServerUrl = document.getElementById('testServerUrl');
+	const setLocalServer = document.getElementById('setLocalServer');
+	const setExternalServer = document.getElementById('setExternalServer');
+	const useExternalServer = document.getElementById('useExternalServer');
 	const count = document.getElementById('count');
 	const trainingMode = document.getElementById('trainingMode');
     const enabled = document.getElementById('enabled');
@@ -145,6 +205,54 @@ async function initPopup() {
 	min.value = String(v.minSeverityToHide);
 	act.value = v.action;
 	badge.checked = !!v.showBadge;
+	if (serverUrlInput) serverUrlInput.value = v.serverUrl || 'http://127.0.0.1:8000';
+	// 버튼 활성 상태 표시
+	const updateServerButtons = (url) => {
+		if (!setLocalServer || !setExternalServer) return;
+		const u = (url || '').trim().replace(/\/$/, '');
+		const isLocal = /^https?:\/\/(127\.0\.0\.1|localhost):8000$/.test(u);
+		const isExternal = /^https?:\/\/223\.194\.46\.69:3000$/.test(u);
+		const setState = (btn, active) => {
+			if (!btn) return;
+			btn.classList.toggle('btn-primary', !!active);
+			btn.classList.toggle('btn-secondary', !active);
+		};
+		setState(setLocalServer, isLocal);
+		setState(setExternalServer, isExternal && !isLocal);
+	};
+	// 외부 서버 모드 UI 적용/해제
+	const setExternalModeUI = (isExternal) => {
+		const retrainBtn0 = document.getElementById('retrainModel');
+		const reloadBtn0 = document.getElementById('reloadModel');
+		const reloadRow0 = reloadBtn0 && reloadBtn0.closest('.row');
+		const retrainRow0 = retrainBtn0 && retrainBtn0.closest('.row');
+		const progressDiv0 = document.getElementById('trainingProgress');
+		if (isExternal) {
+			// 모델 관리 행 숨김
+			if (reloadRow0) reloadRow0.style.display = 'none';
+			// 재학습 행도 숨김
+			if (retrainRow0) retrainRow0.style.display = 'none';
+			// 진행 표시 숨김
+			if (progressDiv0) progressDiv0.style.display = 'none';
+			// 수집 모드 토글은 외부 서버에서도 사용 가능
+			if (trainingMode) { trainingMode.disabled = false; }
+		} else {
+			// 모델 관리 행 표시
+			if (reloadRow0) reloadRow0.style.display = '';
+			// 재학습 행 표시
+			if (retrainRow0) retrainRow0.style.display = '';
+			// 재학습 버튼 활성화 및 텍스트 복구
+			if (retrainBtn0) { retrainBtn0.disabled = false; retrainBtn0.textContent = '재학습 시작'; }
+			// 수집 모드 토글 활성화
+			if (trainingMode) { trainingMode.disabled = false; }
+		}
+	};
+	const currentUrl = v.serverUrl || 'http://127.0.0.1:8000';
+	updateServerButtons(currentUrl);
+	// 외부 서버 토글 상태 설정
+	const isExternalNow = /^https?:\/\/223\.194\.46\.69:3000$/.test((currentUrl || '').trim().replace(/\/$/, ''));
+	if (useExternalServer) useExternalServer.checked = isExternalNow;
+	setExternalModeUI(isExternalNow);
 	trainingMode.checked = !!v.trainingMode;
     if (enabled) enabled.checked = v.enabled !== false;
 	
@@ -153,6 +261,77 @@ async function initPopup() {
 	min.onchange = () => setValues({ minSeverityToHide: Number(min.value) });
 	act.onchange = () => setValues({ action: act.value });
 	badge.onchange = () => setValues({ showBadge: badge.checked });
+	if (applyServerUrl && serverUrlInput) {
+		applyServerUrl.onclick = async (e) => {
+			e.preventDefault(); e.stopPropagation();
+			const url = (serverUrlInput.value || '').trim();
+			if (!url) return;
+			const prev = applyServerUrl.textContent;
+			applyServerUrl.textContent = '저장 중...';
+			applyServerUrl.disabled = true;
+			await setValues({ serverUrl: url });
+			setTimeout(() => {
+				applyServerUrl.textContent = '적용됨';
+				setTimeout(() => {
+					applyServerUrl.textContent = prev || '적용';
+					applyServerUrl.disabled = false;
+				}, 800);
+			}, 150);
+		};
+	}
+	if (testServerUrl && serverUrlInput) {
+		testServerUrl.onclick = async (e) => {
+			e.preventDefault(); e.stopPropagation();
+			const url = (serverUrlInput.value || '').trim().replace(/\/$/, '');
+			if (!url) return;
+			const prev = testServerUrl.textContent;
+			testServerUrl.textContent = '점검 중...';
+			testServerUrl.disabled = true;
+			try {
+				const res = await fetch(`${url}/health`);
+				testServerUrl.textContent = res.ok ? '연결 OK' : `HTTP ${res.status}`;
+			} catch (err) {
+				testServerUrl.textContent = '연결 실패';
+			}
+			setTimeout(() => {
+				testServerUrl.textContent = prev || '점검';
+				testServerUrl.disabled = false;
+			}, 1200);
+		};
+	}
+	if (setLocalServer && serverUrlInput) {
+		setLocalServer.onclick = async (e) => {
+			e.preventDefault(); e.stopPropagation();
+			const target = 'http://127.0.0.1:8000';
+			serverUrlInput.value = target;
+			await setValues({ serverUrl: target });
+			updateServerButtons(target);
+			setExternalModeUI(false);
+			try { testServerUrl?.click(); } catch {}
+		};
+	}
+	if (setExternalServer && serverUrlInput) {
+		setExternalServer.onclick = async (e) => {
+			e.preventDefault(); e.stopPropagation();
+			const target = 'http://223.194.46.69:3000';
+			serverUrlInput.value = target;
+			await setValues({ serverUrl: target });
+			updateServerButtons(target);
+			setExternalModeUI(true);
+			try { testServerUrl?.click(); } catch {}
+		};
+	}
+	if (useExternalServer && serverUrlInput) {
+		useExternalServer.onchange = async (e) => {
+			e.preventDefault(); e.stopPropagation();
+			const target = useExternalServer.checked ? 'http://223.194.46.69:3000' : 'http://127.0.0.1:8000';
+			serverUrlInput.value = target;
+			await setValues({ serverUrl: target });
+			updateServerButtons(target);
+			setExternalModeUI(useExternalServer.checked);
+			try { testServerUrl?.click(); } catch {}
+		};
+	}
     trainingMode.onchange = (e) => { e.preventDefault(); e.stopPropagation(); setValues({ trainingMode: trainingMode.checked }); };
     // 토글 클릭/키입력 버블링 차단 (재학습 버튼 오작동 방지)
     trainingMode.addEventListener('click', (e)=>{ e.stopPropagation(); }, true);
@@ -378,9 +557,15 @@ async function renderTrainingDataFiles() {
     
     const result = await getTrainingFiles();
     const files = result.files || [];
+    // 선택 상태에서 사라진 파일 정리
+    for (const fn of Array.from(SELECTED_FILES)) {
+        if (!files.find(f => f.filename === fn)) SELECTED_FILES.delete(fn);
+    }
     
     if (files.length === 0) {
         dataFilesDiv.innerHTML = '<div class="help">저장된 학습 데이터가 없습니다.</div>';
+        const selectAll = document.getElementById('selectAllFiles');
+        if (selectAll) selectAll.checked = false;
         return;
     }
     
@@ -389,7 +574,10 @@ async function renderTrainingDataFiles() {
         html += `
             <div class="data-file-item" style="margin-bottom: 12px; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 4px;">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                    <div style="font-weight: 600;">${file.filename}</div>
+                    <div style="display:flex; align-items:center; gap:8px;">
+                        <input type="checkbox" class="file-select" data-filename="${file.filename}">
+                        <div style="font-weight: 600;">${file.filename}</div>
+                    </div>
                     <button class="btn btn-small btn-danger delete-file-btn" data-filename="${file.filename}">파일 삭제</button>
                 </div>
                 <div style="font-size: 12px; color: #aaa;">
@@ -405,6 +593,67 @@ async function renderTrainingDataFiles() {
     html += '</div>';
     
     dataFilesDiv.innerHTML = html;
+    
+    // 체크박스 바인딩
+    const checkboxes = dataFilesDiv.querySelectorAll('.file-select');
+    checkboxes.forEach(cb => {
+        const fn = cb.getAttribute('data-filename');
+        if (SELECTED_FILES.has(fn)) cb.checked = true;
+        cb.addEventListener('change', () => {
+            if (cb.checked) SELECTED_FILES.add(fn); else SELECTED_FILES.delete(fn);
+            const selectAll = document.getElementById('selectAllFiles');
+            if (selectAll) {
+                const total = checkboxes.length;
+                const selected = Array.from(checkboxes).filter(x => x.checked).length;
+                selectAll.checked = total > 0 && selected === total;
+            }
+        });
+    });
+    
+    const selectAll = document.getElementById('selectAllFiles');
+    if (selectAll) {
+        // 초기 상태 동기화
+        const total = checkboxes.length;
+        const selected = Array.from(checkboxes).filter(x => x.checked).length;
+        selectAll.checked = total > 0 && selected === total;
+        // 변경 핸들러
+        selectAll.onchange = () => {
+            const checked = !!selectAll.checked;
+            checkboxes.forEach(cb => {
+                cb.checked = checked;
+                const fn = cb.getAttribute('data-filename');
+                if (checked) SELECTED_FILES.add(fn); else SELECTED_FILES.delete(fn);
+            });
+        };
+    }
+    
+    const deleteSelectedBtn = document.getElementById('deleteSelectedFiles');
+    if (deleteSelectedBtn) {
+        deleteSelectedBtn.onclick = async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const targets = Array.from(SELECTED_FILES);
+            if (targets.length === 0) {
+                alert('선택된 파일이 없습니다.');
+                return;
+            }
+            if (!confirm(`${targets.length}개 파일을 삭제하시겠습니까?`)) return;
+            deleteSelectedBtn.disabled = true;
+            const originalText = deleteSelectedBtn.textContent;
+            let done = 0;
+            for (const fn of targets) {
+                deleteSelectedBtn.textContent = `삭제 중... (${++done}/${targets.length})`;
+                try { await deleteTrainingFile(fn); } catch {}
+            }
+            SELECTED_FILES.clear();
+            const sa = document.getElementById('selectAllFiles');
+            if (sa) sa.checked = false;
+            await updateTrainingStats();
+            await renderTrainingDataFiles();
+            deleteSelectedBtn.disabled = false;
+            deleteSelectedBtn.textContent = originalText || '선택 삭제';
+        };
+    }
     
     // 파일 삭제 버튼
     dataFilesDiv.querySelectorAll('.delete-file-btn').forEach(btn => {

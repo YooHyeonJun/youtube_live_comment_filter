@@ -44,6 +44,27 @@
           <span class="track"><span class="thumb"></span></span>
         </label>
       </div>
+      <div class="row">
+        <div class="label">외부 서버</div>
+        <label class="switch">
+          <input type="checkbox" id="useExternalServer">
+          <span class="track"><span class="thumb"></span></span>
+        </label>
+      </div>
+      <div class="row" style="display: none;">
+        <div class="label">서버 주소</div>
+        <input id="serverUrlInput" class="select" placeholder="http://127.0.0.1:8000">
+      </div>
+      <div class="row" style="display: none;">
+        <div class="label">서버</div>
+        <button id="applyServerUrl" class="btn">적용</button>
+        <button id="testServerUrl" class="btn btn-secondary">점검</button>
+      </div>
+      <div class="row" style="display: none;">
+        <div class="label">빠른 설정</div>
+        <button id="setLocalServer" class="btn btn-small">로컬 127.0.0.1:8000</button>
+        <button id="setExternalServer" class="btn btn-small btn-secondary">외부 223.194.46.69:3000</button>
+      </div>
       <div class="sep"></div>
       <div class="kv"><span class="dot"></span> 상태: 실행 중</div>
       <div class="help">설정은 즉시 저장됩니다. 삭제는 채널 권한이 필요하며
@@ -74,6 +95,10 @@
       <div id="dataViewSection" style="display: none;">
         <div class="data-management" style="margin-bottom: 8px;">
           <button class="btn btn-small btn-secondary" id="refreshData">새로고침</button>
+          <label style="font-size:12px; color:#aaa; margin-left:8px; display:inline-flex; align-items:center; gap:6px;">
+            <input type="checkbox" id="selectAllFiles"> 전체 선택
+          </label>
+          <button class="btn btn-small btn-danger" id="deleteSelectedFiles">선택 삭제</button>
           <button class="btn btn-small btn-danger" id="deleteAllData">전체 삭제</button>
         </div>
         <div class="data-files" id="dataFiles">

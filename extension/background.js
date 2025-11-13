@@ -52,15 +52,40 @@ function applyRuleFloorToLabel(originalText, modelLabel, rules) {
 
 async function classify(texts) {
   const { serverUrl } = await getSettings();
-  const url = `${serverUrl.replace(/\/$/, '')}/predict`;
+  const isExternal = (() => {
+    try { const u = new URL(serverUrl); return (u.port === '3000') || /223\.194\.46\.69/.test(u.hostname); } catch { return /:3000$/.test(serverUrl); }
+  })();
+  const base = (serverUrl || '').replace(/\/$/, '');
+  const url = isExternal ? `${base}/api/predict` : `${base}/predict`;
   try {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ texts })
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.json();
+    if (isExternal) {
+      // 외부 서버는 단건 응답({ ok, data:{label,...} })을 반환하므로 텍스트별로 순차 호출하여 배열로 변환
+      const labels = [];
+      for (const t of texts) {
+        try {
+          const res = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ texts: [t] })
+          });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const j = await res.json();
+          const lbl = j?.data?.label;
+          labels.push((lbl === 0 || lbl === 1 || lbl === 2) ? lbl : 0);
+        } catch {
+          labels.push(0);
+        }
+      }
+      return { labels, probs: [], label_names: {} };
+    } else {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ texts })
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return await res.json();
+    }
   } catch (e) {
     console.warn('Classification request failed:', e);
     return { labels: [], probs: [], label_names: {} };
@@ -69,7 +94,19 @@ async function classify(texts) {
 
 async function sendTrainingData(text, label, userId = 'anonymous', useTemp = false) {
   const { serverUrl } = await getSettings();
-  const url = `${serverUrl.replace(/\/$/, '')}/training-data${useTemp ? '?temp=1' : ''}`;
+  // 외부 서버 모드에서도 학습 데이터는 로컬 서버(127.0.0.1:8000)에 저장
+  let base = (serverUrl || '').replace(/\/$/, '');
+  try {
+    const u = new URL(serverUrl || '');
+    if (u.port === '3000' || /223\.194\.46\.69/.test(u.hostname)) {
+      base = 'http://127.0.0.1:8000';
+    }
+  } catch {
+    if (/:3000$/.test(String(serverUrl||''))) {
+      base = 'http://127.0.0.1:8000';
+    }
+  }
+  const url = `${base}/training-data${useTemp ? '?temp=1' : ''}`;
   try {
     const res = await fetch(url, {
       method: 'POST',
@@ -106,34 +143,36 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const settings = await getSettings();
       const rules = Array.isArray(settings.rules) ? settings.rules : [];
       const masks = Array.isArray(settings.masks) ? settings.masks : [];
+      const isExternal = (() => {
+        try { const u = new URL(settings.serverUrl || ''); return (u.port === '3000') || /223\.194\.46\.69/.test(u.hostname); } catch { return /:3000$/.test(String(settings.serverUrl||'')); }
+      })();
 
       const originalTexts = message.texts || [];
       // 1) 모델 입력용 마스크 전처리
       const maskedTexts = originalTexts.map(t => applyMaskToText(t, masks));
 
-      // 2) 캐시 조회(마스크된 텍스트 기준)
-      const cached = await lookupCachedLabels(maskedTexts);
+      // 2) 캐시 조회(마스크된 텍스트 기준) - 외부 서버 모드에서는 생략
+      const cached = isExternal ? { labels: [] } : await lookupCachedLabels(maskedTexts);
 
       // 3) 캐시 미스만 서버 분류
       const out = new Array(originalTexts.length).fill(null);
-      const missIdxs = [];
-      maskedTexts.forEach((t, i) => {
-        const lbl = cached?.labels?.[i];
-        if (lbl === 0 || lbl === 1 || lbl === 2) out[i] = lbl; else missIdxs.push(i);
-      });
-      if (missIdxs.length > 0) {
-        const missTexts = missIdxs.map(i => maskedTexts[i]);
-        const predicted = await classify(missTexts);
-        missIdxs.forEach((i, k) => {
-          out[i] = predicted.labels?.[k] ?? 0;
+      if (isExternal) {
+        const predicted = await classify(maskedTexts);
+        maskedTexts.forEach((_, i) => { out[i] = predicted.labels?.[i] ?? 0; });
+      } else {
+        const missIdxs = [];
+        maskedTexts.forEach((t, i) => {
+          const lbl = cached?.labels?.[i];
+          if (lbl === 0 || lbl === 1 || lbl === 2) out[i] = lbl; else missIdxs.push(i);
         });
-        // 4) 분류 결과 temp 캐시 저장(키=마스크된 텍스트)
-        missIdxs.forEach((i, k) => {
-          const lbl = out[i];
-          if (lbl === 0 || lbl === 1 || lbl === 2) {
-            sendTrainingData(maskedTexts[i], lbl, 'cache', true).catch(() => {});
-          }
-        });
+        if (missIdxs.length > 0) {
+          const missTexts = missIdxs.map(i => maskedTexts[i]);
+          const predicted = await classify(missTexts);
+          missIdxs.forEach((i, k) => {
+            out[i] = predicted.labels?.[k] ?? 0;
+          });
+          // 4) (삭제됨) 분류 결과를 임시 캐시로 전송/저장하는 기능은 비활성화되었습니다.
+        }
       }
 
       // 5) 룰 최소 심각도 적용(원문 기준)
@@ -161,8 +200,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message?.type === 'sendTrainingData') {
-    const useTemp = message.useTemp === true; // 명시 요청 시에만 temp 사용
-    sendTrainingData(message.text, message.label, message.userId, useTemp).then(sendResponse);
+    // 임시 저장 비활성화: 항상 영구 저장으로 전송
+    sendTrainingData(message.text, message.label, message.userId, false).then(sendResponse);
     return true;
   }
 

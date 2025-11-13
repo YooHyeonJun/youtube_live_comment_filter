@@ -35,7 +35,7 @@ else:
 print(f"Total model files to include: {len(model_datas)}")
 
 # Collect metadata for packages that need it
-from PyInstaller.utils.hooks import copy_metadata
+from PyInstaller.utils.hooks import copy_metadata, collect_submodules
 
 metadata_packages = [
     'transformers',
@@ -55,6 +55,8 @@ metadata_packages = [
     'pydantic',
     'sklearn',
     'scikit-learn',
+    'accelerate',
+    'peft',
 ]
 
 metadata_datas = []
@@ -64,11 +66,48 @@ for pkg in metadata_packages:
     except:
         pass
 
+# Collect ALL torch submodules (including _dynamo)
+torch_hidden = []
+dynamo_hidden = []
+dynamo_polyfill_hidden = []
+numpy_hidden = []
+try:
+    torch_hidden = collect_submodules('torch')
+    print(f"Collected {len(torch_hidden)} torch submodules")
+    # Ensure _dynamo and its polyfills are explicitly collected (PyInstaller sometimes misses nested namespace packages)
+    dynamo_hidden = collect_submodules('torch._dynamo')
+    print(f"Collected {len(dynamo_hidden)} torch._dynamo submodules")
+    dynamo_polyfill_hidden = collect_submodules('torch._dynamo.polyfills')
+    print(f"Collected {len(dynamo_polyfill_hidden)} torch._dynamo.polyfills submodules")
+    # Numpy submodules (ensure numpy C-extension packages are included)
+    numpy_hidden = collect_submodules('numpy')
+    print(f"Collected {len(numpy_hidden)} numpy submodules")
+except Exception as e:
+    print(f"Warning: Could not collect torch submodules: {e}")
+
+import sys
+import site
+
+# torch._dynamo.polyfills 디렉터리를 포함
+torch_dynamo_datas = []
+try:
+    import torch._dynamo.polyfills
+    polyfills_dir = os.path.dirname(torch._dynamo.polyfills.__file__)
+    for root, dirs, files in os.walk(polyfills_dir):
+        for file in files:
+            if file.endswith('.py'):
+                src = os.path.join(root, file)
+                rel = os.path.relpath(root, os.path.dirname(polyfills_dir))
+                torch_dynamo_datas.append((src, os.path.join('torch', '_dynamo', rel)))
+    print(f"Added {len(torch_dynamo_datas)} torch._dynamo.polyfills files")
+except Exception as e:
+    print(f"Warning: Could not add torch._dynamo.polyfills: {e}")
+
 a = Analysis(
     ['app.py'],
     pathex=[],
     binaries=[],
-    datas=model_datas + metadata_datas + [
+    datas=model_datas + metadata_datas + torch_dynamo_datas + [
         ('train.py', '.'),
     ],
     hiddenimports=[
@@ -82,9 +121,28 @@ a = Analysis(
         'uvicorn.protocols.websockets.auto',
         'uvicorn.lifespan',
         'uvicorn.lifespan.on',
+        # torch dynamo/polyfills explicit (PyInstaller may miss these)
+        'torch._dynamo',
+        'torch._dynamo.polyfills',
+        'torch._dynamo.polyfills.loader',
+        'torch._dynamo.polyfills.fx',
+        'torch._dynamo.polyfills.indexing',
+        'torch._dynamo.polyfills.modules',
+        'torch._dynamo.polyfills.utils',
+        'torch._dynamo.polyfills.tensor',
         'sklearn.utils._weight_vector',
         'sklearn.neighbors._partition_nodes',
-    ],
+        # accelerate & peft (for training)
+        'accelerate',
+        'accelerate.utils',
+        'peft',
+        'peft.utils',
+        # transformers training
+        'transformers.trainer',
+        'transformers.trainer_callback',
+        'transformers.training_args',
+        'transformers.integrations',
+    ] + torch_hidden + dynamo_hidden + dynamo_polyfill_hidden + numpy_hidden,  # Add ALL torch + _dynamo + polyfills + numpy
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -103,10 +161,10 @@ exe = EXE(
     [],
     exclude_binaries=True,
     name='youtube_live_filter_server',
-    debug=False,
+    debug=True,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     console=True,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -121,7 +179,7 @@ coll = COLLECT(
     a.zipfiles,
     a.datas,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     name='youtube_live_filter_server',
 )

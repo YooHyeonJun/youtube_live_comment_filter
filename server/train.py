@@ -13,6 +13,11 @@ from pathlib import Path
 from typing import List, Tuple
 from collections import Counter
 
+# Disable torch compile/dynamo (for PyInstaller compatibility)
+os.environ["TORCH_COMPILE_DISABLE"] = "1"
+os.environ["TORCHDYNAMO_DISABLE"] = "1"
+os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+
 import numpy as np
 import torch
 from torch.utils.data import Dataset
@@ -56,7 +61,7 @@ class ChatDataset(Dataset):
             "labels": torch.tensor(int(self.labels[i]), dtype=torch.long),
         }
 
-def load_training_data(data_dir: Path) -> Tuple[List[str], List[int]]:
+def load_training_data(data_dir: Path, augment_factor: int = 3000) -> Tuple[List[str], List[int]]:
     texts: List[str] = []
     labels: List[int] = []
     files = sorted(data_dir.glob("training_data_*.jsonl"))
@@ -75,6 +80,13 @@ def load_training_data(data_dir: Path) -> Tuple[List[str], List[int]]:
                     labels.append(int(obj["label"]))
                 except Exception as e:
                     log.warning(f"skip line in {p.name}: {e}")
+    
+    # 데이터 증강: 각 샘플을 augment_factor번 복제
+    if augment_factor > 1 and texts:
+        log.info(f"원본 데이터: {len(texts)}개 -> 증강 후: {len(texts) * augment_factor}개 (x{augment_factor})")
+        texts = texts * augment_factor
+        labels = labels * augment_factor
+    
     return texts, labels
 
 
@@ -126,6 +138,7 @@ def train(
     warmup_ratio: float = 0.06,
     use_class_weights: bool = True,
     seed: int = 42,
+    augment_factor: int = 3000,
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     log.info(f"device: {device} | method: bitfit")
@@ -134,7 +147,7 @@ def train(
     tokenizer = AutoTokenizer.from_pretrained(str(model_dir), use_fast=True)
     model = AutoModelForSequenceClassification.from_pretrained(str(model_dir), config=config)
 
-    texts, labels = load_training_data(training_data_dir)
+    texts, labels = load_training_data(training_data_dir, augment_factor=augment_factor)
     if len(texts) == 0:
         log.error("no training data")
         return False
@@ -190,6 +203,7 @@ def train(
         fp16=torch.cuda.is_available(),
         max_grad_norm=1.0,
         report_to=None,
+        torch_compile=False,  # Disable torch compile for PyInstaller compatibility
     )
 
     trainer = WLossTrainer(
@@ -230,6 +244,7 @@ def main():
     ap.add_argument("--warmup-ratio", type=float, default=0.06)
     ap.add_argument("--max-length", type=int, default=256)
     ap.add_argument("--no-class-weights", action="store_true")
+    ap.add_argument("--augment-factor", type=int, default=3000, help="데이터 증강 배수 (기본값: 3000)")
     args = ap.parse_args()
 
     ok = train(
@@ -242,6 +257,7 @@ def main():
         lr=args.lr,
         warmup_ratio=args.warmup_ratio,
         use_class_weights=(not args.no_class_weights),
+        augment_factor=args.augment_factor,
     )
     return 0 if ok else 1
 

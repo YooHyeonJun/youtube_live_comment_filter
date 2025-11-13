@@ -12,12 +12,47 @@ import shutil
 import re
 import sys
 
-import torch
+# Ensure torch compile/dynamo is disabled before importing torch (safer for PyInstaller)
+os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
+os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_THREADING_LAYER", "SEQUENTIAL")
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "1")
+
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
-from peft import PeftModel
+
+# SAFE_MODE: 대상 PC에서 torch/peft 로딩 문제가 있을 때 모델 로딩을 건너뛰고 서버만 띄움
+SAFE_MODE = os.environ.get("SAFE_MODE", "0") == "1"
+
+if not SAFE_MODE:
+	try:
+		import torch  # type: ignore
+		from transformers import AutoTokenizer, AutoModelForSequenceClassification  # type: ignore
+		from peft import PeftModel  # type: ignore
+	except Exception as _torch_err:
+		# 안전하게 폴백
+		SAFE_MODE = True
+		torch = None  # type: ignore
+		AutoTokenizer = None  # type: ignore
+		AutoModelForSequenceClassification = None  # type: ignore
+		PeftModel = None  # type: ignore
+else:
+	torch = None  # type: ignore
+	AutoTokenizer = None  # type: ignore
+	AutoModelForSequenceClassification = None  # type: ignore
+	PeftModel = None  # type: ignore
+
+# train 모듈 import (직접 함수 호출용)
+try:
+	from train import train as train_model_func
+	TRAIN_MODULE_AVAILABLE = True
+except ImportError:
+	TRAIN_MODULE_AVAILABLE = False
+	LOGGER_EARLY = logging.getLogger("yt_live_chat_filter")
+	LOGGER_EARLY.warning("train module not available for direct import")
 
 # Early logger reference for functions defined before logging setup below
 LOGGER = logging.getLogger("yt_live_chat_filter")
@@ -79,8 +114,12 @@ class LookupRequest(BaseModel):
 ADAPTER_STATUS = {"attached": False, "path": None}
 
 def _load_model(model_dir: Path):
-	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-	tokenizer = AutoTokenizer.from_pretrained(str(model_dir))
+	if SAFE_MODE:
+		# 토치 미사용 안전 모드: 토크나이저/모델 없이 동작
+		return None, None, "cpu"
+	
+	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # type: ignore[attr-defined]
+	tokenizer = AutoTokenizer.from_pretrained(str(model_dir))  # type: ignore[operator]
 	
 	# Check for active adapter first
 	adapter_dir = Path(__file__).resolve().parents[1] / "adapters" / "active"
@@ -90,36 +129,37 @@ def _load_model(model_dir: Path):
 	try:
 		if adapter_cfg.exists():
 			# PEFT adapter: load base model then attach adapter
-			model = AutoModelForSequenceClassification.from_pretrained(str(model_dir))
-			model = PeftModel.from_pretrained(model, str(adapter_dir))
+			model = AutoModelForSequenceClassification.from_pretrained(str(model_dir))  # type: ignore[operator]
+			model = PeftModel.from_pretrained(model, str(adapter_dir))  # type: ignore[operator]
 			ADAPTER_STATUS["attached"] = True
 			ADAPTER_STATUS["path"] = str(adapter_dir)
 			LOGGER.info(f"PEFT adapter attached: {ADAPTER_STATUS['path']}")
 		elif has_model_file:
 			# Full fine-tuned model (BitFit/Linear): load directly
-			model = AutoModelForSequenceClassification.from_pretrained(str(adapter_dir))
+			model = AutoModelForSequenceClassification.from_pretrained(str(adapter_dir))  # type: ignore[operator]
 			ADAPTER_STATUS["attached"] = True
 			ADAPTER_STATUS["path"] = str(adapter_dir)
 			LOGGER.info(f"Fine-tuned model loaded from: {ADAPTER_STATUS['path']}")
 		else:
 			# No adapter: use base model
-			model = AutoModelForSequenceClassification.from_pretrained(str(model_dir))
+			model = AutoModelForSequenceClassification.from_pretrained(str(model_dir))  # type: ignore[operator]
 			ADAPTER_STATUS["attached"] = False
 			ADAPTER_STATUS["path"] = None
 			LOGGER.info("No adapter found. Using base model only.")
 	except Exception as e:
 		LOGGER.warning(f"Adapter load failed, using base model: {e}")
-		model = AutoModelForSequenceClassification.from_pretrained(str(model_dir))
+		model = AutoModelForSequenceClassification.from_pretrained(str(model_dir))  # type: ignore[operator]
 		ADAPTER_STATUS["attached"] = False
 		ADAPTER_STATUS["path"] = None
 	
-	model.to(device)
-	model.eval()
+	model.to(device)  # type: ignore[union-attr]
+	model.eval()  # type: ignore[union-attr]
 	return tokenizer, model, device
 
 
-def _softmax(logits: torch.Tensor) -> torch.Tensor:
-	return torch.nn.functional.softmax(logits, dim=-1)
+def _softmax(logits):
+	# SAFE_MODE에서는 호출되지 않음
+	return torch.nn.functional.softmax(logits, dim=-1)  # type: ignore[name-defined]
 
 
 def save_training_data(text: str, label: int, user_id: str, use_temp: bool = False) -> bool:
@@ -135,7 +175,7 @@ def save_training_data(text: str, label: int, user_id: str, use_temp: bool = Fal
 		
 		# 날짜별로 파일 분리
 		date_str = datetime.now().strftime("%Y-%m-%d")
-		base_dir = TEMP_TRAINING_DATA_DIR if use_temp else TRAINING_DATA_DIR
+		base_dir = TRAINING_DATA_DIR
 		data_file = base_dir / f"training_data_{date_str}.jsonl"
 		
 		# 동시 쓰기 안전: append + flush
@@ -144,11 +184,10 @@ def save_training_data(text: str, label: int, user_id: str, use_temp: bool = Fal
 		with open(data_file, "a", encoding="utf-8") as f:
 			f.write(line)
 			f.flush()
-		# temp 사용 시 개수 제한 적용 (30개 유지)
-		if use_temp:
-			_enforce_temp_limit(30)
+		# temp 비활성화: 개수 제한 미적용
 		
-		LOGGER.info(f"Training data saved: label={label} ({LABEL_NAMES.get(label, '?')}) text=\"{text[:50]}...\"")
+		if 'LOG_TRAINING_SAVES' in globals() and LOG_TRAINING_SAVES:
+			LOGGER.info(f"Training data saved: label={label} ({LABEL_NAMES.get(label, '?')}) text=\"{text[:50]}...\"")
 		return True
 	except Exception as e:
 		LOGGER.error(f"Failed to save training data: {e}")
@@ -181,29 +220,81 @@ def run_training_background():
 		TRAINING_STATUS["progress"] = 20
 		TRAINING_STATUS["message"] = f"학습 데이터 {total_samples}개 확인됨. 학습 시작..."
 		
-		# 학습 스크립트 실행 (BitFit)
-		script_path = Path(__file__).parent / "train.py"
 		output_dir = ADAPTER_UPDATED_DIR
-		
-		cmd = [
-			str(Path(__file__).parent / ".venv" / "Scripts" / "python.exe"),
-			str(script_path),
-			"--model-dir", str(MODEL_DIR),
-			"--training-data-dir", str(TRAINING_DATA_DIR),
-			"--output-dir", str(output_dir),
-			"--epochs", os.environ.get("TRAINING_EPOCHS", "1"),
-			"--batch-size", os.environ.get("TRAINING_BATCH", "16"),
-			"--lr", os.environ.get("TRAINING_LR", "5e-6"),
-			"--warmup-ratio", os.environ.get("TRAINING_WARMUP_RATIO", "0.06")
-		]
+		epochs = int(os.environ.get("TRAINING_EPOCHS", "1"))
+		batch_size = int(os.environ.get("TRAINING_BATCH", "16"))
+		lr = float(os.environ.get("TRAINING_LR", "5e-6"))
+		warmup_ratio = float(os.environ.get("TRAINING_WARMUP_RATIO", "0.06"))
+		augment_factor = 3000
 		
 		TRAINING_STATUS["progress"] = 30
 		TRAINING_STATUS["message"] = "모델 학습 중... (시간이 걸릴 수 있습니다)"
 		
-		# 학습 실행 (타임아웃 없음)
-		result = subprocess.run(cmd, capture_output=True, text=True, timeout=None)
-		result_returncode = result.returncode
-		result_stderr = result.stderr if result.returncode != 0 else ""
+		# EXE 환경이거나 train 모듈이 사용 가능하면 직접 호출
+		is_frozen = getattr(sys, 'frozen', False)
+		
+		if is_frozen or TRAIN_MODULE_AVAILABLE:
+			# 직접 함수 호출 (EXE 환경 또는 모듈 가능)
+			LOGGER.info(f"Training directly (frozen={is_frozen})")
+			LOGGER.info(f"model_dir={MODEL_DIR}, training_data_dir={TRAINING_DATA_DIR}, output_dir={output_dir}")
+			LOGGER.info(f"epochs={epochs}, batch_size={batch_size}, lr={lr}, warmup_ratio={warmup_ratio}, augment_factor={augment_factor}")
+			
+			try:
+				success = train_model_func(
+					model_dir=Path(MODEL_DIR),
+					training_data_dir=TRAINING_DATA_DIR,
+					output_dir=output_dir,
+					epochs=epochs,
+					batch_size=batch_size,
+					lr=lr,
+					warmup_ratio=warmup_ratio,
+					augment_factor=augment_factor
+				)
+				result_returncode = 0 if success else 1
+			except Exception as train_err:
+				LOGGER.error(f"Direct training failed: {train_err}", exc_info=True)
+				result_returncode = 1
+		else:
+			# subprocess 실행 (일반 Python 환경)
+			script_path = Path(__file__).parent / "train.py"
+			python_exe = sys.executable
+			
+			cmd = [
+				python_exe,
+				str(script_path),
+				"--model-dir", str(MODEL_DIR),
+				"--training-data-dir", str(TRAINING_DATA_DIR),
+				"--output-dir", str(output_dir),
+				"--epochs", str(epochs),
+				"--batch-size", str(batch_size),
+				"--lr", str(lr),
+				"--warmup-ratio", str(warmup_ratio),
+				"--augment-factor", str(augment_factor)
+			]
+			
+			LOGGER.info(f"Training via subprocess: {python_exe}")
+			LOGGER.info(f"Script: {script_path}")
+			
+			# 환경 변수 설정
+			env = os.environ.copy()
+			env["TRAINING_MODE"] = "1"
+			
+			result = subprocess.run(
+				cmd, 
+				capture_output=True, 
+				text=True, 
+				timeout=None,
+				cwd=str(Path(__file__).parent),
+				env=env
+			)
+			result_returncode = result.returncode
+			
+			# 로그 출력
+			LOGGER.info(f"Training exit code: {result_returncode}")
+			if result.stdout:
+				LOGGER.info(f"Training stdout:\n{result.stdout}")
+			if result.stderr:
+				LOGGER.error(f"Training stderr:\n{result.stderr}")
 		
 		if result_returncode == 0:
 			TRAINING_STATUS["progress"] = 80
@@ -230,9 +321,9 @@ def run_training_background():
 			LOGGER.info("Model retraining completed successfully!")
 			
 		else:
-			TRAINING_STATUS["error"] = f"학습 실패: {result_stderr}"
+			TRAINING_STATUS["error"] = f"학습 실패 (코드 {result_returncode})"
 			TRAINING_STATUS["is_training"] = False
-			LOGGER.error(f"Training failed: {result_stderr}")
+			LOGGER.error(f"Training failed with code {result_returncode}")
 		
 	except Exception as e:
 		TRAINING_STATUS["error"] = f"학습 중 오류: {str(e)}"
@@ -334,6 +425,7 @@ TRAINING_STATUS = {
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 LOGGER = logging.getLogger("yt_live_chat_filter")
 LOG_PREDICTIONS = os.environ.get("LOG_PREDICTIONS", "1") == "1"
+LOG_TRAINING_SAVES = os.environ.get("LOG_TRAINING_SAVES", "0") == "1"
 
 app = FastAPI(title="YouTube Live Chat Moderation Model Server", version="1.0.0")
 
@@ -380,6 +472,15 @@ def add_training_data(req: TrainingDataRequest, temp: bool = False) -> TrainingD
 	if not req.text.strip():
 		return TrainingDataResponse(success=False, message="Empty text")
 	
+	# 임시 저장 비활성화: temp 요청은 저장하지 않고 성공으로 무시
+	if temp:
+		return TrainingDataResponse(success=True, message="Temp training data is disabled; request ignored")
+	
+	# 명시적 사용자 클릭만 저장 허용: 과거 캐시 저장 등 비의도적 경로 차단
+	allowed_user_ids = {"user"}  # 확장에서 클릭 저장 시 'user'로 전송
+	if getattr(req, "user_id", None) not in allowed_user_ids:
+		return TrainingDataResponse(success=False, message="Only explicit user-click data is allowed")
+	
 	success = save_training_data(req.text, req.label, req.user_id, use_temp=temp)
 	if success:
 		return TrainingDataResponse(success=True, message="Training data saved successfully")
@@ -389,59 +490,15 @@ def add_training_data(req: TrainingDataRequest, temp: bool = False) -> TrainingD
 
 @app.delete("/training-data/temp")
 def delete_temp_training_data() -> Dict[str, Any]:
-	"""임시 학습 데이터 전체 삭제"""
-	try:
-		_cleanup_temp_dir()
-		TEMP_TRAINING_DATA_DIR.mkdir(exist_ok=True)
-		return {"message": "Temporary training data cleared"}
-	except Exception as e:
-		raise HTTPException(status_code=500, detail=f"임시 데이터 삭제 실패: {str(e)}")
+	"""임시 학습 데이터 전체 삭제 (비활성화)"""
+	return {"message": "Temp training data feature is disabled"}
 
 
 @app.post("/training-data/lookup")
 def lookup_cached_labels(req: LookupRequest) -> Dict[str, Any]:
-    """TEMP에 저장된 텍스트 라벨 캐시 조회 (최근 날짜 우선)"""
-    try:
-        # 간단한 텍스트 단순 매칭(정규화 없이). 필요시 소문자/공백정리 확장 가능
-        incoming = req.texts or []
-        targets = [t.strip() for t in incoming if isinstance(t, str) and t.strip()]
-        if not targets:
-            return {"labels": [None] * len(incoming)}
-
-        # 최신 파일부터 스캔 (동시 쓰기/락 오류는 건너뜀)
-        files = sorted(TEMP_TRAINING_DATA_DIR.glob("training_data_*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
-        cache: Dict[str, int] = {}
-        for fp in files:
-            try:
-                with open(fp, 'r', encoding='utf-8') as f:
-                    for line in f:
-                        if not line.strip():
-                            continue
-                        try:
-                            item = json.loads(line)
-                            txt = str(item.get('text', '')).strip()
-                            lbl = int(item.get('label', 0))
-                            if txt and txt not in cache:
-                                cache[txt] = lbl
-                        except Exception:
-                            continue
-            except Exception:
-                continue
-            if len(cache) >= 20000:
-                break
-
-        # 원래 요청 순서를 유지하여 매핑 (빈/비문자열은 None)
-        out = []
-        for t in incoming:
-            if isinstance(t, str):
-                key = t.strip()
-                out.append(cache.get(key, None) if key else None)
-            else:
-                out.append(None)
-        return {"labels": out}
-    except Exception as e:
-        LOGGER.error(f"lookup 실패: {e}")
-        return {"labels": [None] * len(getattr(req, 'texts', []) or [])}
+	"""TEMP 캐시 비활성화: 항상 None으로 응답"""
+	incoming = getattr(req, 'texts', []) or []
+	return {"labels": [None] * len(incoming)}
 
 
 @app.get("/training-data/stats")
@@ -476,36 +533,16 @@ def get_training_data_stats() -> Dict[str, Any]:
 
 @app.get("/training-data/stats-temp")
 def get_training_data_stats_temp() -> Dict[str, Any]:
-    """임시 학습 데이터 통계 조회 (사용자 클릭 데이터만)"""
-    try:
-        total_count = 0
-        label_counts = {0: 0, 1: 0, 2: 0}
-        for data_file in TEMP_TRAINING_DATA_DIR.glob("training_data_*.jsonl"):
-            try:
-                with open(data_file, "r", encoding="utf-8", errors="ignore") as f:
-                    for line in f:
-                        if line.strip():
-                            try:
-                                data = json.loads(line)
-                                total_count += 1
-                                label_counts[int(data.get("label", 0))] += 1
-                            except (json.JSONDecodeError, ValueError):
-                                continue
-            except Exception as e:
-                LOGGER.warning(f"Failed to read file {data_file}: {e}")
-                continue
-        return {
-            "total_samples": total_count,
-            "label_distribution": { LABEL_NAMES[k]: v for k, v in label_counts.items() },
-            "data_files": len(list(TEMP_TRAINING_DATA_DIR.glob("training_data_*.jsonl")))
-        }
-    except Exception as e:
-        LOGGER.error(f"Failed to get temp training data stats: {e}")
-        return {"error": str(e)}
+	"""임시 학습 데이터 통계 비활성화"""
+	return {
+		"total_samples": 0,
+		"label_distribution": { LABEL_NAMES[k]: 0 for k in LABEL_NAMES.keys() },
+		"data_files": 0
+	}
 
 @app.get("/training-data/stats-all")
 def get_training_data_stats_all() -> Dict[str, Any]:
-    """저장된 학습 데이터 통계 조회 (영구 + 임시 모두)"""
+    """저장된 학습 데이터 통계 조회 (영구만)"""
     try:
         def accumulate_from_dir(base: Path, total_label_counts: Dict[int, int]) -> int:
             total = 0
@@ -531,12 +568,11 @@ def get_training_data_stats_all() -> Dict[str, Any]:
         label_counts = {0: 0, 1: 0, 2: 0}
         total_count = 0
         total_count += accumulate_from_dir(TRAINING_DATA_DIR, label_counts)
-        total_count += accumulate_from_dir(TEMP_TRAINING_DATA_DIR, label_counts)
 
         return {
             "total_samples": total_count,
             "label_distribution": { LABEL_NAMES[k]: v for k, v in label_counts.items() },
-            "data_files": len(list(TRAINING_DATA_DIR.glob("training_data_*.jsonl"))) + len(list(TEMP_TRAINING_DATA_DIR.glob("training_data_*.jsonl")))
+            "data_files": len(list(TRAINING_DATA_DIR.glob("training_data_*.jsonl")))
         }
     except Exception as e:
         LOGGER.error(f"Failed to get training data stats(all): {e}")
@@ -568,6 +604,9 @@ def start_retraining(background_tasks: BackgroundTasks) -> Dict[str, Any]:
 	"""모델 재학습 시작"""
 	global TRAINING_STATUS
 	
+	if SAFE_MODE:
+		return {"success": False, "message": "SAFE_MODE=1: 재학습이 비활성화되어 있습니다"}
+	
 	if TRAINING_STATUS["is_training"]:
 		return {"success": False, "message": "이미 학습이 진행 중입니다"}
 	
@@ -583,39 +622,6 @@ def get_training_status() -> Dict[str, Any]:
 	return TRAINING_STATUS
 
 
-<<<<<<< HEAD
-@app.get("/training-data/files-temp")
-def get_training_data_files_temp() -> Dict[str, Any]:
-	"""임시 학습 데이터 파일 목록 조회 (사용자 클릭 데이터)"""
-	try:
-		files = []
-		pattern = str(TEMP_TRAINING_DATA_DIR / "training_data_*.jsonl")
-		for file_path in glob.glob(pattern):
-			file_name = os.path.basename(file_path)
-			file_size = os.path.getsize(file_path)
-			file_date = datetime.fromtimestamp(os.path.getmtime(file_path))
-			
-			# 파일 내용 개수 계산
-			count = 0
-			with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-				for line in f:
-					if line.strip():
-						count += 1
-			
-			files.append({
-				"filename": file_name,
-				"path": file_path,
-				"size": file_size,
-				"count": count,
-				"date": file_date.isoformat()
-			})
-		
-		# 날짜순으로 정렬 (최신순)
-		files.sort(key=lambda x: x['date'], reverse=True)
-		return {"files": files}
-	except Exception as e:
-		raise HTTPException(status_code=500, detail=f"파일 목록 조회 실패: {str(e)}")
-=======
 @app.post("/model/reset-training-status")
 def reset_training_status() -> Dict[str, Any]:
 	"""재학습 상태 강제 리셋 (막힌 상태 해결용)"""
@@ -639,8 +645,6 @@ def model_info() -> Dict[str, Any]:
         "adapter_path": ADAPTER_STATUS.get("path")
     }
 
->>>>>>> origin/BitFit-retrain
-
 @app.get("/training-data/files")
 def get_training_data_files() -> Dict[str, Any]:
 	"""학습 데이터 파일 목록 조회"""
@@ -648,24 +652,28 @@ def get_training_data_files() -> Dict[str, Any]:
 		files = []
 		pattern = str(TRAINING_DATA_DIR / "training_data_*.jsonl")
 		for file_path in glob.glob(pattern):
-			file_name = os.path.basename(file_path)
-			file_size = os.path.getsize(file_path)
-			file_date = datetime.fromtimestamp(os.path.getmtime(file_path))
-			
-			# 파일 내용 개수 계산
-			count = 0
-			with open(file_path, 'r', encoding='utf-8') as f:
-				for line in f:
-					if line.strip():
-						count += 1
-			
-			files.append({
-				"filename": file_name,
-				"path": file_path,
-				"size": file_size,
-				"count": count,
-				"date": file_date.isoformat()
-			})
+			try:
+				file_name = os.path.basename(file_path)
+				file_size = os.path.getsize(file_path)
+				file_date = datetime.fromtimestamp(os.path.getmtime(file_path))
+				
+				# 파일 내용 개수 계산 (손상/인코딩 오류 내구성)
+				count = 0
+				with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+					for line in f:
+						if line.strip():
+							count += 1
+				
+				files.append({
+					"filename": file_name,
+					"path": file_path,
+					"size": file_size,
+					"count": count,
+					"date": file_date.isoformat()
+				})
+			except Exception as e:
+				# 문제 있는 파일은 건너뛰고 계속
+				LOGGER.warning(f"Skip file in listing due to error: {file_path} ({e})")
 		
 		# 날짜순으로 정렬 (최신순)
 		files.sort(key=lambda x: x['date'], reverse=True)
@@ -676,32 +684,8 @@ def get_training_data_files() -> Dict[str, Any]:
 
 @app.get("/training-data/files-temp/{filename}")
 def get_training_data_file_temp(filename: str) -> Dict[str, Any]:
-	"""특정 임시 학습 데이터 파일 내용 조회"""
-	try:
-		file_path = TEMP_TRAINING_DATA_DIR / filename
-		if not file_path.exists():
-			raise HTTPException(status_code=404, detail="파일을 찾을 수 없습니다")
-		
-		data = []
-		with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-			for line_num, line in enumerate(f, 1):
-				if line.strip():
-					try:
-						item = json.loads(line.strip())
-						item['line_number'] = line_num
-						data.append(item)
-					except json.JSONDecodeError:
-						continue
-		
-		return {
-			"filename": filename,
-			"count": len(data),
-			"data": data
-		}
-	except HTTPException:
-		raise
-	except Exception as e:
-		raise HTTPException(status_code=500, detail=f"파일 조회 실패: {str(e)}")
+	"""특정 임시 학습 데이터 파일 내용 조회 (비활성화)"""
+	raise HTTPException(status_code=410, detail="Temp training data feature is disabled")
 
 @app.get("/training-data/files/{filename}")
 def get_training_data_file(filename: str) -> Dict[str, Any]:
@@ -801,6 +785,10 @@ def predict(req: PredictRequest) -> PredictResponse:
 	texts = [t if isinstance(t, str) else str(t) for t in req.texts]
 	if len(texts) == 0:
 		return PredictResponse(labels=[], probs=[], label_names=LABEL_NAMES)
+	
+	# SAFE_MODE: 토치/모델 없이 동작 (모두 정상으로 처리)
+	if SAFE_MODE:
+		return PredictResponse(labels=[0]*len(texts), probs=[[1.0, 0.0, 0.0] for _ in texts], label_names=LABEL_NAMES)
 
 	encoded = TOKENIZER(
 		texts,
@@ -831,7 +819,11 @@ def predict(req: PredictRequest) -> PredictResponse:
 
 
 if __name__ == "__main__":
-	import uvicorn
-	port = int(os.environ.get("PORT", 8000))
-	# exe 환경에서는 문자열 대신 직접 app 인스턴스를 전달해야 함
-	uvicorn.run(app, host="127.0.0.1", port=port, reload=False)
+	# exe 환경에서는 TRAINING_MODE 여부와 무관하게 항상 서버 실행
+	is_frozen = getattr(sys, 'frozen', False)
+	should_run_server = True if is_frozen else (os.environ.get("TRAINING_MODE") != "1")
+	if should_run_server:
+		import uvicorn
+		port = int(os.environ.get("PORT", 8000))
+		# exe 환경에서는 문자열 대신 직접 app 인스턴스를 전달해야 함
+		uvicorn.run(app, host="127.0.0.1", port=port, reload=False)

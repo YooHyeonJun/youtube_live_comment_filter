@@ -169,3 +169,4 @@ Write-Host "2. YouTube Live 채팅에서 실제 테스트" -ForegroundColor Gray
 Write-Host "3. 학습 데이터 수집 및 모델 재학습" -ForegroundColor Gray
 Write-Host ""
 
+
