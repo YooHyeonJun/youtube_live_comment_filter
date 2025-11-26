@@ -281,7 +281,22 @@ def _enforce_temp_limit(max_items: int = 30) -> None:
 	except Exception as e:
 		LOGGER.warning(f"Failed to enforce temp limit: {e}")
 
-TOKENIZER, MODEL, DEVICE = _load_model(MODEL_DIR)
+# 모델 로드 (에러 처리 추가)
+try:
+	print(f"[INFO] 모델 로드 중... 경로: {MODEL_DIR}")
+	print(f"[INFO] 모델 디렉토리 존재 여부: {MODEL_DIR.exists()}")
+	if MODEL_DIR.exists():
+		print(f"[INFO] 모델 디렉토리 내용: {list(MODEL_DIR.iterdir())[:5]}...")
+	TOKENIZER, MODEL, DEVICE = _load_model(MODEL_DIR)
+	print(f"[INFO] 모델 로드 완료! 디바이스: {DEVICE}")
+except Exception as e:
+	error_msg = f"모델 로드 실패: {e}\n경로: {MODEL_DIR}\n경로 존재 여부: {MODEL_DIR.exists()}"
+	print(f"[ERROR] {error_msg}")
+	LOGGER.error(error_msg, exc_info=True)
+	# exe 환경에서 에러 메시지를 볼 수 있도록 일시정지
+	if getattr(sys, 'frozen', False):
+		input("\n에러가 발생했습니다. 위 메시지를 확인하세요.\n계속하려면 Enter를 누르세요...")
+	raise
 
 # 0 정상, 1 약간 악성, 2 악성
 LABEL_NAMES = {0: "정상", 1: "약간 악성", 2: "악성"}
@@ -770,6 +785,17 @@ def predict(req: PredictRequest) -> PredictResponse:
 
 if __name__ == "__main__":
 	import uvicorn
-	port = int(os.environ.get("PORT", 8000))
-	# exe 환경에서는 문자열 대신 직접 app 인스턴스를 전달해야 함
-	uvicorn.run(app, host="127.0.0.1", port=port, reload=False)
+	try:
+		port = int(os.environ.get("PORT", 8000))
+		print(f"[INFO] 서버 시작 중... 포트: {port}")
+		print(f"[INFO] 서버 주소: http://127.0.0.1:{port}")
+		# exe 환경에서는 문자열 대신 직접 app 인스턴스를 전달해야 함
+		uvicorn.run(app, host="127.0.0.1", port=port, reload=False)
+	except Exception as e:
+		error_msg = f"서버 시작 실패: {e}"
+		print(f"[ERROR] {error_msg}")
+		LOGGER.error(error_msg, exc_info=True)
+		# exe 환경에서 에러 메시지를 볼 수 있도록 일시정지
+		if getattr(sys, 'frozen', False):
+			input("\n에러가 발생했습니다. 위 메시지를 확인하세요.\n계속하려면 Enter를 누르세요...")
+		raise

@@ -1,0 +1,27 @@
+Collecting pyinstaller
+  Obtaining dependency information for pyinstaller from https://files.pythonhosted.org/packages/2d/f5/6a122efe024433ecc34aab6f499e0bd2bbe059c639b77b0045aa2421b0bf/pyinstaller-6.17.0-py3-none-win_amd64.whl.metadata
+  Downloading pyinstaller-6.17.0-py3-none-win_amd64.whl.metadata (8.5 kB)
+Collecting altgraph (from pyinstaller)
+  Obtaining dependency information for altgraph from https://files.pythonhosted.org/packages/a9/ba/000a1996d4308bc65120167c21241a3b205464a2e0b58deda26ae8ac21d1/altgraph-0.17.5-py2.py3-none-any.whl.metadata
+  Downloading altgraph-0.17.5-py2.py3-none-any.whl.metadata (7.5 kB)
+Requirement already satisfied: packaging>=22.0 in c:\users\hjyoo\desktop\youtube_live_comment_filter\server\.venv\lib\site-packages (from pyinstaller) (25.0)
+Collecting pefile>=2022.5.30 (from pyinstaller)
+  Obtaining dependency information for pefile>=2022.5.30 from https://files.pythonhosted.org/packages/54/16/12b82f791c7f50ddec566873d5bdd245baa1491bac11d15ffb98aecc8f8b/pefile-2024.8.26-py3-none-any.whl.metadata
+  Downloading pefile-2024.8.26-py3-none-any.whl.metadata (1.4 kB)
+Collecting pyinstaller-hooks-contrib>=2025.9 (from pyinstaller)
+  Obtaining dependency information for pyinstaller-hooks-contrib>=2025.9 from https://files.pythonhosted.org/packages/86/de/a7688eed49a1d3df337cdaa4c0d64e231309a52f269850a72051975e3c4a/pyinstaller_hooks_contrib-2025.10-py3-none-any.whl.metadata
+  Downloading pyinstaller_hooks_contrib-2025.10-py3-none-any.whl.metadata (16 kB)
+Collecting pywin32-ctypes>=0.2.1 (from pyinstaller)
+  Obtaining dependency information for pywin32-ctypes>=0.2.1 from https://files.pythonhosted.org/packages/de/3d/8161f7711c017e01ac9f008dfddd9410dff3674334c233bde66e7ba65bbf/pywin32_ctypes-0.2.3-py3-none-any.whl.metadata
+  Downloading pywin32_ctypes-0.2.3-py3-none-any.whl.metadata (3.9 kB)
+Requirement already satisfied: setuptools>=42.0.0 in c:\users\hjyoo\desktop\youtube_live_comment_filter\server\.venv\lib\site-packages (from pyinstaller) (80.9.0)
+Downloading pyinstaller-6.17.0-py3-none-win_amd64.whl (1.4 MB)
+   ---------------------------------------- 1.4/1.4 MB 8.8 MB/s eta 0:00:00
+Downloading pefile-2024.8.26-py3-none-any.whl (74 kB)
+   ---------------------------------------- 74.8/74.8 kB ? eta 0:00:00
+Downloading pyinstaller_hooks_contrib-2025.10-py3-none-any.whl (447 kB)
+   ---------------------------------------- 447.8/447.8 kB 9.3 MB/s eta 0:00:00
+Downloading pywin32_ctypes-0.2.3-py3-none-any.whl (30 kB)
+Downloading altgraph-0.17.5-py2.py3-none-any.whl (21 kB)
+Installing collected packages: altgraph, pywin32-ctypes, pyinstaller-hooks-contrib, pefile, pyinstaller
+Successfully installed altgraph-0.17.5 pefile-2024.8.26 pyinstaller-6.17.0 pyinstaller-hooks-contrib-2025.10 pywin32-ctypes-0.2.3
